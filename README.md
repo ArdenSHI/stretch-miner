@@ -1,5 +1,7 @@
 # Stretch Miner · 拉伸版黄金矿工
 
+**在线玩：https://ardenshi.github.io/stretch-miner/** （HTTPS，摄像头可用，不需要装任何东西）
+
 SD5913 Assignment 3（interactive experience）原型。你的摄像头画面就在画布**底部正中**
 （镜像，像照镜子），手臂从画面上缘伸出去。**不用手也能玩**：身体（或头）往画面
 左/右挪一点，手臂就朝那个斜上方伸；一直偏着就一直长，挪回中间就极速收回。
@@ -14,6 +16,11 @@ SD5913 Assignment 3（interactive experience）原型。你的摄像头画面就
 
 ## 运行
 
+线上直接玩：https://ardenshi.github.io/stretch-miner/ 。
+仓库由 GitHub Pages 从 `main` 根目录发布，改完 `git push` 后一两分钟生效。
+
+本地开发：
+
 ```bash
 python3 serve.py
 # 打开 http://localhost:8011/
@@ -21,7 +28,8 @@ python3 serve.py
 
 `getUserMedia` 必须在 `localhost` 或 HTTPS 下使用。MediaPipe 的库
 （`vendor/vision_bundle.mjs` + wasm）和姿态模型（`vendor/models/`，
-约 15 MB）都已下载到本地，**运行时不需要联网**；
+约 10 MB）都放在仓库里、**优先按同源加载**，所以别人打开页面也不需要访问
+jsdelivr / Google；本地副本取不到时才回退在线源。
 `serve.py` 会把 .mjs/.wasm 的 MIME 类型配置正确（老版本 Python 的
 `python3 -m http.server` 可能返回错误类型导致模块加载失败）。
 
