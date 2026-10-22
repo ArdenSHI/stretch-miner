@@ -33,6 +33,7 @@ const el = {
   diag: document.getElementById("diag"),
   sens: document.getElementById("sens"),
   sensVal: document.getElementById("sensVal"),
+  save: document.getElementById("btnSave"),
 };
 
 // 摄像头画面：画布底部正中
@@ -90,6 +91,32 @@ const poseState = {
   delegate: "-",
   modelUrl: "-",
 };
+
+// ---------- 定格帧：抓到宝物那一刻的摄像头画面 ----------
+// 每次抓到宝物都覆盖一次，所以局末留下的就是"抓住最后一个"的那一帧。
+// 只存在内存里的 canvas，不上传、不落盘（除非你主动点「保存这一帧」）。
+const snap = { canvas: null, ctx: null, label: "", ms: 0 };
+
+function snapCamera(label = "") {
+  if (video.readyState < 2 || !video.videoWidth) return null;
+  if (!snap.canvas) {
+    snap.canvas = document.createElement("canvas");
+    snap.ctx = snap.canvas.getContext("2d");
+  }
+  if (snap.canvas.width !== video.videoWidth) {
+    snap.canvas.width = video.videoWidth;
+    snap.canvas.height = video.videoHeight;
+  }
+  const c = snap.ctx;
+  c.save();
+  c.translate(snap.canvas.width, 0); // 镜像存下来，显示时和镜中的你一致
+  c.scale(-1, 1);
+  c.drawImage(video, 0, 0);
+  c.restore();
+  snap.label = label;
+  snap.ms = performance.now();
+  return snap.canvas;
+}
 
 // ---------- 音效（Web Audio，无外部资源） ----------
 let audio = null;
@@ -151,6 +178,9 @@ function reset() {
   game.shake = 0;
   game.debug = "";
   game.lean = 0;
+  snap.canvas = null;   // 上一局的定格帧不留下
+  snap.label = "";
+  el.save.hidden = true;
   layout();
   syncHud();
   if (game.input === "head") setStatus("准备好了 —— 身体往左/右挪一点，手臂就朝那边伸");
@@ -264,6 +294,7 @@ function updateArm(dt, holding, dir) {
           arm.carry = it;
           arm.mode = "back";
           sfxGrab();
+          snapCamera(KIND[it.kind].label); // 定格这一刻（最后一次覆盖后就是"最后一个"）
           setStatus(`抓住了${KIND[it.kind].label} —— 收回来`);
         }
         break;
@@ -275,6 +306,9 @@ function updateArm(dt, holding, dir) {
 function finish(won) {
   game.phase = "over";
   game.arm.mode = "back";
+  // 一个宝物都没抓到就结束（比如三条命都撞炸弹）：至少留一帧当下的画面
+  if (!snap.canvas) snapCamera("");
+  el.save.hidden = !snap.canvas;
   syncHud();
   if (won) {
     setStatus(`全部收完！得分 ${game.score} —— 点「重来一局」`);
@@ -666,23 +700,82 @@ function drawPanel() {
   ctx.textAlign = "left";
 }
 
+// 按目标比例裁中间，避免拉伸变形
+function drawCover(src, x, y, w, h) {
+  const sw = src.width, sh = src.height;
+  const target = w / h;
+  let cw = sw, ch = sh;
+  if (sw / sh > target) cw = sh * target;
+  else ch = sw / target;
+  ctx.drawImage(src, (sw - cw) / 2, (sh - ch) / 2, cw, ch, x, y, w, h);
+}
+
+// 结算画面：把"抓住最后一个"那一帧放到正中
+function drawResult() {
+  const won = game.items.filter((i) => i.kind !== "bomb").length === 0;
+  ctx.fillStyle = "rgba(10,14,20,0.82)";
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = won ? "#F2C14E" : "#E8EDF4";
+  ctx.font = "500 30px system-ui";
+  ctx.fillText(won ? "全部收完" : "游戏结束", W / 2, 104);
+
+  const pw = 440, ph = 330;
+  const px = W / 2 - pw / 2, py = 126;
+
+  ctx.save();
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(px, py, pw, ph, 12); else ctx.rect(px, py, pw, ph);
+  ctx.clip();
+  ctx.fillStyle = "#0B1017";
+  ctx.fillRect(px, py, pw, ph);
+  if (snap.canvas) {
+    drawCover(snap.canvas, px, py, pw, ph);
+    // 底部压一层暗，让下面的字看得清
+    const g = ctx.createLinearGradient(0, py + ph * 0.55, 0, py + ph);
+    g.addColorStop(0, "rgba(10,14,20,0)");
+    g.addColorStop(1, "rgba(10,14,20,0.78)");
+    ctx.fillStyle = g;
+    ctx.fillRect(px, py + ph * 0.55, pw, ph * 0.45);
+    ctx.fillStyle = "#E8EDF4";
+    ctx.font = "500 17px system-ui";
+    ctx.fillText(
+      snap.label ? `抓到最后一个：${snap.label}` : "抓到最后一个的那一刻",
+      W / 2, py + ph - 22
+    );
+  } else {
+    ctx.fillStyle = "#4A5766";
+    ctx.font = "14px system-ui";
+    ctx.fillText("这一局没有摄像头画面（鼠标模式）", W / 2, py + ph / 2);
+  }
+  ctx.restore();
+
+  ctx.strokeStyle = won ? "#F2C14E" : "#41556B";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(px, py, pw, ph, 12); else ctx.rect(px, py, pw, ph);
+  ctx.stroke();
+
+  ctx.fillStyle = "#E8EDF4";
+  ctx.font = "500 20px system-ui";
+  ctx.fillText(`得分 ${game.score}`, W / 2, py + ph + 44);
+  ctx.font = "14px system-ui";
+  ctx.fillStyle = "#93A1B3";
+  ctx.fillText(
+    snap.canvas ? "点「保存这一帧」存成 PNG · 点「重来一局」再来" : "点上方「重来一局」再来一次",
+    W / 2, py + ph + 76
+  );
+  ctx.textAlign = "left";
+}
+
 function drawOverlay() {
   if (game.flash > 0) {
     ctx.fillStyle = `rgba(226,75,74,${game.flash * 0.5})`;
     ctx.fillRect(0, 0, W, H);
   }
   if (game.phase === "over") {
-    ctx.fillStyle = "rgba(10,14,20,0.72)";
-    ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = "#E8EDF4";
-    ctx.font = "500 30px system-ui";
-    ctx.textAlign = "center";
-    const won = game.items.filter((i) => i.kind !== "bomb").length === 0;
-    ctx.fillText(won ? "全部收完" : "游戏结束", W / 2, H / 2 - 8);
-    ctx.font = "16px system-ui";
-    ctx.fillStyle = "#93A1B3";
-    ctx.fillText(`得分 ${game.score} · 点上方「重来一局」`, W / 2, H / 2 + 26);
-    ctx.textAlign = "left";
+    drawResult();
   } else if (game.phase === "ready") {
     ctx.fillStyle = "rgba(10,14,20,0.6)";
     ctx.fillRect(0, 0, W, H);
@@ -774,6 +867,17 @@ document.getElementById("btnRestart").addEventListener("click", () => {
   if (game.input === "none") game.input = "mouse";
   reset();
 });
+el.save.addEventListener("click", () => {
+  if (!snap.canvas) return;
+  snap.canvas.toBlob((blob) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "stretch-miner-last-catch.png";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+  });
+});
 document.getElementById("btnCenter").addEventListener("click", () => {
   game.centerX = game.trackX;
   setStatus(`已把 ${(game.centerX * 100).toFixed(0)}% 设为"中间" —— 现在往左/右挪就能伸`);
@@ -788,7 +892,7 @@ requestAnimationFrame(loop);
 
 // 调试用：控制台里可以 __stretchMiner.game / .poseState 看状态
 window.__stretchMiner = {
-  game, poseState, reset, startMouse, startCamera, readHead, readArm,
+  game, poseState, snap, reset, startMouse, startCamera, readHead, readArm,
   loadPose, // 暴露出来便于离线自检：await __stretchMiner.loadPose() 应返回模型实例
   // 注入一个假的姿态检测器（离线自检用，正常运行时不需要）
   _injectDetector(fn) {
