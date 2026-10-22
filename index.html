@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stretch Miner · 拉伸版黄金矿工</title>
+<style>
+  :root {
+    --bg: #0E131A;
+    --panel: #171F2A;
+    --ink: #E8EDF4;
+    --muted: #93A1B3;
+    --gold: #F2C14E;
+    --line: #2A3543;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "PingFang SC", "Helvetica Neue", system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px 16px 32px;
+  }
+  h1 { font-size: 18px; font-weight: 500; margin: 0 0 4px; letter-spacing: .02em; }
+  .sub { font-size: 13px; color: var(--muted); margin: 0 0 16px; }
+  .hud {
+    width: 960px; max-width: 100%;
+    display: flex; align-items: center; gap: 20px;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 10px;
+  }
+  .stat { font-size: 13px; color: var(--muted); }
+  .stat b { color: var(--ink); font-weight: 500; font-size: 15px; }
+  .lives { display: flex; gap: 5px; }
+  .life { width: 11px; height: 11px; border-radius: 50%; background: #E24B4A; }
+  .life.gone { background: #33404F; }
+  #status {
+    margin-left: auto; font-size: 13px; color: var(--gold);
+    min-width: 320px; text-align: right;
+  }
+  canvas {
+    width: 960px; max-width: 100%; height: auto;
+    background: #101720; border: 1px solid var(--line); border-radius: 10px;
+    display: block; touch-action: none;
+  }
+  .controls { width: 960px; max-width: 100%; display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+  button {
+    font: inherit; font-size: 13px; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 14px; cursor: pointer;
+  }
+  button:hover { border-color: #41556B; }
+  button.primary { background: #2A4A63; border-color: #3E6B8C; }
+  .hint { width: 960px; max-width: 100%; font-size: 12.5px; color: var(--muted); line-height: 1.7; margin-top: 12px; }
+  .hint code { color: #B9C7D8; }
+  /* 不能 display:none —— 某些浏览器会停止解码隐藏视频的帧，姿态就永远推不出来 */
+  video { position: fixed; top: 0; left: 0; width: 2px; height: 2px; opacity: .01; pointer-events: none; }
+  .diag {
+    width: 960px; max-width: 100%;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 10px; margin-top: 10px;
+    word-break: break-all;
+  }
+  .diag .warn { color: #E24B4A; }
+  .tune {
+    width: 960px; max-width: 100%; display: flex; align-items: center; gap: 12px;
+    margin-top: 10px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap;
+  }
+  .tune input[type=range] { width: 180px; accent-color: var(--gold); }
+  .tune button { font-size: 12.5px; padding: 6px 12px; }
+</style>
+</head>
+<body>
+  <h1>Stretch Miner · 拉伸版黄金矿工</h1>
+  <p class="sub">站在镜头前，身体往左/右挪一点，手臂就朝那个斜上方不断伸长 —— <b>不用举手</b>，也可以切「伸手臂控制」。</p>
+
+  <div class="hud">
+    <span class="stat">得分 <b id="score">0</b></span>
+    <span class="stat">剩余宝物 <b id="left">0</b></span>
+    <span class="stat">生命</span>
+    <span class="lives" id="lives"></span>
+    <span id="status" role="status" aria-live="polite">点「开始」授权摄像头</span>
+  </div>
+
+  <canvas id="stage" width="960" height="640"></canvas>
+
+  <div class="controls">
+    <button id="btnHead" class="primary">开始 · 不用手（身体左右挪）</button>
+    <button id="btnArm">开始 · 伸手臂控制</button>
+    <button id="btnMouse">鼠标试玩（不需要摄像头）</button>
+    <button id="btnRestart">重来一局</button>
+  </div>
+
+  <div class="tune">
+    <label>灵敏度 <input id="sens" type="range" min="0" max="100" value="50"> <b id="sensVal">50</b></label>
+    <button id="btnCenter">以现在的位置为「中间」</button>
+    <span>数字越大越灵敏：伸不出就往右拉，老是自己乱伸就往左拉</span>
+  </div>
+
+  <div class="diag" id="diag">诊断：等待开始…</div>
+
+  <p class="hint">
+    你的摄像头画面就在画布<b>底部正中</b>那格里（镜像，像照镜子），手臂从格子上方伸出去。<br>
+    <b>不用手的控制</b>：身体（或头）往左挪一点，手臂就朝左上方伸；一直偏着就一直长；挪回画面中间就极速收回。
+    抓到钻石 / 金块 / 钱袋 +1 分，碰到炸弹立刻收回扣一条命，共三条命；宝物全部抓完即结束。<br>
+    也可以切「伸手臂控制」：向斜上方举一只手并保持住。没有摄像头或被拒绝授权时会自动切到鼠标模式：
+    <b>按住鼠标</b>朝一个方向拖，松手即收回。摄像头必须在 <code>localhost</code> 或 HTTPS 下使用；
+    画面只在本地处理，不上传、不保存。<br>
+    <b>库和模型都已放在本地 <code>vendor/</code>，不需要联网</b>。用 <code>python3 serve.py</code> 启动最稳。
+    <b>没反应时看什么</b>：画布下方那行诊断。摄像头 ✓ + 模型 ✓ + 检测到人 ✓ 三个都亮了才算通；
+    哪个是 ✗ 就告诉我哪一项。三个都亮但还是伸不出，就拉「灵敏度」滑块，或者坐正后点「以现在的位置为中间」再挪。
+    画面里那两条红色小刻度就是"伸出手臂"需要的偏移量，黄线要越过它。
+  </p>
+
+  <video id="cam" playsinline muted></video>
+  <script type="module" src="game.js"></script>
+</body>
+</html>
