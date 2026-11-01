@@ -36,7 +36,7 @@ const el = {
   save: document.getElementById("btnSave"),
 };
 
-// 摄像头画面：画布底部正中
+// 摄像头画面：画布底部正中 —— 奶奶的脸就在这格里
 const PANEL = { w: 300, h: 225, x: W / 2 - 150, y: H - 225 - 14 };
 // 手臂从这个画面的顶边正中伸出去
 const ANCHOR = { x: W / 2, y: PANEL.y };
@@ -47,8 +47,93 @@ const TIP_R = 14;
 const MIN_TILT = 0.10;       // 刚越过阈值时的偏角（约 6°，几乎正上方）
 const MAX_TILT = 1.15;       // 偏到底时的偏角（约 66°）
 
-const TREASURE_PLAN = ["diamond", "gold", "bag", "gold", "diamond", "bag", "gold"];
-const BOMB_COUNT = 3;
+// ---------- 画风：马克笔笔触 + 高饱和配色 ----------
+const INK = "#2B1533";
+const C = {
+  teal: "#00B8A9", magenta: "#FF3D7F", orange: "#FF8A3D", yellow: "#FFD23F",
+  purple: "#8A4FFF", red: "#E5322D", blue: "#1E7BE8", green: "#4FD14F",
+  pink: "#FF9BC6", cream: "#FFF4DC", wood: "#E08A2B", woodDark: "#B45F1C",
+  gold: "#F2B705", lilac: "#CDB4FF", skin: "#F6C9A0", skinShade: "#E0A277",
+};
+
+// 所有笔触都走 pen（默认主画布）；画静态桌面时临时切到离屏画布
+let pen = ctx;
+
+// 确定性抖动：同一件东西每一帧抖得一模一样，画面才不会闪
+function _h(n) { const s = Math.sin(n * 12.9898) * 43758.5453; return s - Math.floor(s); }
+function jit(pts, seed, amt) {
+  return pts.map((p, i) => ({
+    x: p.x + (_h(seed + i * 1.31) - 0.5) * amt,
+    y: p.y + (_h(seed + i * 2.17 + 5) - 0.5) * amt,
+  }));
+}
+function trace(pts, close) {
+  pen.beginPath();
+  pen.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) pen.lineTo(pts[i].x, pts[i].y);
+  if (close) pen.closePath();
+}
+// 一遍填充 + 两遍描边：故意让颜色溢出轮廓，像笔没涂在线里
+function ink(pts, o = {}) {
+  const { fill = null, stroke = INK, lw = 3, close = true, seed = 1, amt = 2.6, passes = 2, jf = 0.7 } = o;
+  if (fill) {
+    trace(jit(pts, seed + 40, amt * jf), close);
+    pen.fillStyle = fill;
+    pen.fill();
+  }
+  if (stroke) {
+    pen.strokeStyle = stroke;
+    pen.lineWidth = lw;
+    pen.lineJoin = "round";
+    pen.lineCap = "round";
+    for (let i = 0; i < passes; i++) {
+      trace(jit(pts, seed + i * 9.3, amt), close);
+      pen.stroke();
+    }
+  }
+}
+function ringPts(cx, cy, r, n = 14, squash = 1) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    out.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r * squash });
+  }
+  return out;
+}
+function disc(cx, cy, r, o = {}) { ink(ringPts(cx, cy, r, o.n || 14, o.squash || 1), o); }
+function rectPts(x, y, w, h) { return [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }]; }
+function bar(x1, y1, x2, y2, color = INK, lw = 4, seed = 1, amt = 1.8) {
+  ink([{ x: x1, y: y1 }, { x: x2, y: y2 }], { stroke: color, lw, close: false, seed, amt, passes: 2 });
+}
+function roughArc(cx, cy, r, a0, a1, o = {}) {
+  const n = o.n || 10;
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const a = a0 + (a1 - a0) * (i / n);
+    pts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r * (o.squash || 1) });
+  }
+  ink(pts, { ...o, close: false });
+}
+
+// ---------- 桌面上的东西 ----------
+// 奶奶要找的：眼镜、项链、耳环、戒指、胸针、发夹
+const KIND = {
+  glasses: { r: 21, label: "眼镜" },
+  necklace: { r: 22, label: "项链" },
+  earring: { r: 17, label: "耳环" },
+  ring: { r: 16, label: "戒指" },
+  brooch: { r: 18, label: "胸针" },
+  hairpin: { r: 19, label: "发夹" },
+};
+// 不能碰的：虫子、裸露在外通着电的插头
+const HAZARD = {
+  bug: { r: 19, label: "虫子" },
+  plug: { r: 20, label: "插头" },
+};
+const isHazard = (k) => k === "bug" || k === "plug";
+
+const TREASURE_PLAN = ["glasses", "necklace", "earring", "ring", "brooch", "hairpin", "glasses"];
+const HAZARD_PLAN = ["bug", "plug", "bug"];
 
 // 灵敏度：0 = 最迟钝，1 = 最灵敏（滑块实时可调，不用改代码）
 let sens = 0.5;
@@ -68,7 +153,9 @@ const game = {
   lives: 3,
   items: [],
   arm: { len: 0, dir: { x: 0, y: -1 }, mode: "idle", carry: null, lock: false },
+  pops: [],          // 画面上冒出来的短句（"找到了！" / "哎呀！虫子"）
   flash: 0,
+  flashColor: "226,75,74",
   shake: 0,
   lastTs: 0,
   seenPerson: false,
@@ -138,17 +225,29 @@ function beep(freqs, type = "sine", dur = 0.12) {
   }
 }
 const sfxGrab = () => beep([660, 880], "triangle", 0.1);
-const sfxBomb = () => beep([150, 90], "sawtooth", 0.22);
+const sfxBug = () => beep([300, 220, 150], "square", 0.08);
+const sfxZap = () => beep([90, 1100, 70], "sawtooth", 0.14);
 const sfxMiss = () => beep([220], "sine", 0.08);
 const sfxWin = () => beep([523, 659, 784, 1047], "triangle", 0.14);
+const sfxLose = () => beep([330, 220, 160], "sawtooth", 0.2);
 
-// ---------- 宝物布局 ----------
-const KIND = {
-  diamond: { r: 17, label: "钻石" },
-  gold: { r: 20, label: "金块" },
-  bag: { r: 22, label: "钱袋" },
-};
+// 撞到虫子/插头时整个浏览器窗口一起抖（不只是画布里抖）
+let quakeTimer = 0;
+function quakeWindow() {
+  document.body.classList.remove("quake");
+  void document.body.offsetWidth; // 强制重排，动画才会重新播一遍
+  document.body.classList.add("quake");
+  clearTimeout(quakeTimer);
+  quakeTimer = setTimeout(() => document.body.classList.remove("quake"), 720);
+}
 
+// 画面上冒出来的短句
+function addPop(text, pos, color = C.gold) {
+  if (!game.pops) game.pops = [];
+  game.pops.push({ text, x: pos.x, y: pos.y, color, t: 0 });
+}
+
+// ---------- 桌面上的东西怎么摆 ----------
 function place(items, kind, r, minGap, tries = 200) {
   for (let t = 0; t < tries; t++) {
     const p = {
@@ -166,7 +265,7 @@ function place(items, kind, r, minGap, tries = 200) {
 function layout() {
   game.items = [];
   for (const kind of TREASURE_PLAN) place(game.items, kind, KIND[kind].r, 96);
-  for (let i = 0; i < BOMB_COUNT; i++) place(game.items, "bomb", 20, 88);
+  for (const kind of HAZARD_PLAN) place(game.items, kind, HAZARD[kind].r, 88);
 }
 
 function reset() {
@@ -176,6 +275,7 @@ function reset() {
   game.arm = { len: 0, dir: { x: 0, y: -1 }, mode: "idle", carry: null, lock: false };
   game.flash = 0;
   game.shake = 0;
+  game.pops = [];
   game.debug = "";
   game.lean = 0;
   snap.canvas = null;   // 上一局的定格帧不留下
@@ -183,15 +283,15 @@ function reset() {
   el.save.hidden = true;
   layout();
   syncHud();
-  if (game.input === "head") setStatus("准备好了 —— 身体往左/右挪一点，手臂就朝那边伸");
+  if (game.input === "head") setStatus("奶奶要看清了 —— 身体往左/右挪一点，手就朝那边伸过去");
   else if (game.input === "arm") setStatus("准备好了 —— 向斜上方伸出一只手臂并保持住");
-  else setStatus("按住鼠标，朝斜上方拖动");
+  else setStatus("按住鼠标，朝首饰的方向拖");
 }
 
 // ---------- HUD ----------
 function syncHud() {
   el.score.textContent = String(game.score);
-  el.left.textContent = String(game.items.filter((i) => i.kind !== "bomb").length);
+  el.left.textContent = String(game.items.filter((i) => !isHazard(i.kind)).length);
   el.lives.innerHTML = "";
   for (let i = 0; i < 3; i++) {
     const d = document.createElement("span");
@@ -244,7 +344,7 @@ function updateArm(dt, holding, dir) {
 
   if (arm.mode === "idle" || arm.mode === "out") {
     if (holding) {
-      if (arm.mode !== "out") game.bombMsg = null;
+      if (arm.mode !== "out") game.hurtMsg = null;
       arm.mode = "out";
       arm.len += STRETCH_SPEED * dt;
       if (arm.len >= reachLimit()) {
@@ -261,12 +361,13 @@ function updateArm(dt, holding, dir) {
       arm.mode = "idle";
       if (arm.carry) {
         game.score += 1;
-        setStatus(`抓到${KIND[arm.carry.kind].label}！+1 分`);
+        setStatus(`找到了${KIND[arm.carry.kind].label}！+1 分`);
+        addPop(`找到${KIND[arm.carry.kind].label}！`, tipPos(), C.gold);
         arm.carry = null;
         syncHud();
-        if (game.items.filter((i) => i.kind !== "bomb").length === 0) finish(true);
+        if (game.items.filter((i) => !isHazard(i.kind)).length === 0) finish(true);
       } else if (game.phase === "playing") {
-        if (game.bombMsg) setStatus(game.bombMsg);
+        if (game.hurtMsg) setStatus(game.hurtMsg);
         else if (game.input === "head") setStatus("往左或往右再挪一点 —— 手臂就朝那边伸");
         else if (game.input === "arm") setStatus("再伸一次 —— 举高一点更容易够到");
         else setStatus("按住鼠标再试一次");
@@ -280,14 +381,27 @@ function updateArm(dt, holding, dir) {
     for (const it of game.items) {
       if (Math.hypot(it.x - tip.x, it.y - tip.y) < it.r + TIP_R) {
         game.items.splice(game.items.indexOf(it), 1);
-        if (it.kind === "bomb") {
+        if (isHazard(it.kind)) {
           game.lives -= 1;
-          game.flash = 0.35;
-          game.shake = 0.3;
+          const hurt = HAZARD[it.kind].label;
+          if (it.kind === "bug") {
+            game.flash = 0.55;
+            game.flashColor = "74,209,79";         // 虫子：恶心的绿
+            addPop("啊——虫子！", tipPos(), C.green);
+            sfxBug();
+          } else {
+            game.flash = 0.55;
+            game.flashColor = "30,123,232";        // 插头：电光蓝
+            addPop("哎哟！有电！", tipPos(), C.blue);
+            sfxZap();
+          }
+          // 整面画布 + 整个窗口一起震
+          game.shake = 0.75;
+          quakeWindow();
           arm.mode = "back";
-          sfxBomb();
-          setStatus(`炸弹！剩余 ${Math.max(game.lives, 0)} 条命`);
-          if (game.lives > 0) game.bombMsg = `炸弹！剩余 ${game.lives} 条命 —— ${relaxHint()}`;
+          const left = Math.max(game.lives, 0);
+          setStatus(`碰到${hurt}！手缩回来了 —— 还剩 ${left} 次机会`);
+          if (game.lives > 0) game.hurtMsg = `刚才碰到的是${hurt} —— ${relaxHint()}`;
           syncHud();
           if (game.lives <= 0) finish(false);
         } else {
@@ -311,11 +425,11 @@ function finish(won) {
   el.save.hidden = !snap.canvas;
   syncHud();
   if (won) {
-    setStatus(`全部收完！得分 ${game.score} —— 点「重来一局」`);
+    setStatus(`首饰全找齐了！共 ${game.score} 件 —— 点「重来一局」`);
     sfxWin();
   } else {
-    setStatus("三条命用完了 —— 点「重来一局」");
-    beep([330, 220, 160], "sawtooth", 0.2);
+    setStatus("哎呀，折腾坏了 —— 点「重来一局」再找一次");
+    sfxLose();
   }
 }
 
@@ -546,99 +660,401 @@ function setPointer(e) {
 }
 
 // ---------- 绘制 ----------
-function drawBackground() {
-  ctx.fillStyle = "#101720";
-  ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = "#16202C";
-  ctx.beginPath();
-  ctx.ellipse(W / 2, -60, W * 0.62, 220, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#1B2531";
-  ctx.beginPath();
-  ctx.moveTo(0, H);
-  ctx.lineTo(0, H - 74);
-  ctx.quadraticCurveTo(W * 0.35, H - 108, W * 0.62, H - 80);
-  ctx.quadraticCurveTo(W * 0.85, H - 60, W, H - 92);
-  ctx.lineTo(W, H);
-  ctx.closePath();
-  ctx.fill();
+let deskLayer = null;
+
+function squiggle(x1, y1, x2, y2, color = INK, lw = 2, amp = 3, seed = 1) {
+  const pts = [];
+  for (let i = 0; i <= 12; i++) {
+    const t = i / 12;
+    pts.push({ x: x1 + (x2 - x1) * t, y: y1 + (y2 - y1) * t + (_h(seed + i * 3.1) - 0.5) * amp });
+  }
+  ink(pts, { stroke: color, lw, close: false, seed, amt: 1.2, passes: 1 });
+}
+
+function flower(cx, cy, r, petal = C.magenta, core = C.yellow, seed = 1) {
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
+    disc(cx + Math.cos(a) * r * 0.85, cy + Math.sin(a) * r * 0.85, r * 0.6,
+      { fill: petal, stroke: INK, lw: 2.2, seed: seed + i, amt: 1.6, passes: 1 });
+  }
+  disc(cx, cy, r * 0.45, { fill: core, stroke: INK, lw: 2, seed: seed + 9, amt: 1.2, passes: 1 });
+}
+
+// 一段粗笔完成下面再压一层细笔 effect：所有手臂/线条都靠这个，保证有描边感
+function thickLine(x1, y1, x2, y2, color, w) {
+  pen.lineCap = "round";
+  pen.lineJoin = "round";
+  pen.strokeStyle = INK;
+  pen.lineWidth = w + 5;
+  pen.beginPath(); pen.moveTo(x1, y1); pen.lineTo(x2, y2); pen.stroke();
+  pen.strokeStyle = color;
+  pen.lineWidth = w;
+  pen.beginPath(); pen.moveTo(x1, y1); pen.lineTo(x2, y2); pen.stroke();
+}
+
+// ---------- 杂乱的桌面（画一次，存成离屏图层） ----------
+function buildDesk() {
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const prev = pen;
+  pen = c.getContext("2d");
+  paintDesk();
+  pen = prev;
+  deskLayer = c;
+}
+
+function paintDesk() {
+  pen.fillStyle = C.wood;
+  pen.fillRect(0, 0, W, H);
+  pen.lineCap = "round";
+  for (let i = 0; i < 30; i++) {
+    const y = (i / 30) * (H + 60) - 30;
+    pen.strokeStyle = i % 3 === 0 ? "rgba(180,95,28,0.42)" : "rgba(255,209,63,0.22)";
+    pen.lineWidth = 2 + (i % 3);
+    pen.beginPath();
+    pen.moveTo(-10, y);
+    for (let x = 0; x <= W + 20; x += 90) pen.lineTo(x, y + Math.sin(x / 150 + i * 0.7) * 5);
+    pen.stroke();
+  }
+
+  // 铺开的一叠旧报纸：给首饰一个干净点的舞台
+  pen.save();
+  pen.translate(W / 2, 212);
+  pen.rotate(-0.024);
+  ink(rectPts(-432, -172, 864, 336), { fill: C.cream, stroke: "#C0884B", lw: 3.5, seed: 3, amt: 3.4 });
+  ink(rectPts(-424, -164, 864, 336), { stroke: "#E4CFA6", lw: 2, seed: 8, amt: 2.6, passes: 1 });
+  squiggle(-400, -144, -170, -144, C.red, 7, 4, 11);
+  squiggle(-400, -132, -230, -132, C.red, 3, 3, 12);
+  for (let row = 0; row < 9; row++) {
+    const y = -106 + row * 33;
+    squiggle(-402, y, -30, y, "#BCA987", 2, 2.6, 20 + row);
+    squiggle(10, y, 300, y, "#BCA987", 2, 2.6, 40 + row);
+    squiggle(330, y, 412, y, "#BCA987", 2, 2.6, 60 + row);
+  }
+  pen.restore();
+
+  paintClutter();
+}
+
+function paintClutter() {
+  // 左上：搪瓷茶杯 + 一缕热气
+  (function cup(x, y, s) {
+    disc(x, y + 54 * s, 42 * s, { fill: C.pink, stroke: INK, lw: 3, squash: 0.4, seed: 101 });
+    ink(rectPts(x - 32 * s, y - 6 * s, 64 * s, 52 * s), { fill: C.teal, stroke: INK, lw: 3.2, seed: 100 });
+    roughArc(x, y - 4 * s, 32 * s, Math.PI, Math.PI * 2, { stroke: INK, lw: 3, seed: 102, n: 8 });
+    roughArc(x, y + 34 * s, 30 * s, 0, Math.PI, { stroke: INK, lw: 2.4, seed: 103, n: 8 });
+    bar(x + 32 * s, y + 8 * s, x + 50 * s, y + 26 * s, INK, 5, 104);
+    bar(x + 34 * s, y + 26 * s, x + 32 * s, y + 8 * s, C.teal, 3, 104);
+    squiggle(x - 10 * s, y - 16 * s, x - 4 * s, y - 46 * s, "#8C7BB5", 3, 5, 105);
+    squiggle(x + 12 * s, y - 14 * s, x + 18 * s, y - 40 * s, "#8C7BB5", 3, 5, 106);
+  })(104, 70, 1.0);
+
+  // 右上：药瓶们
+  (function bottles(x, y, s) {
+    for (let i = 0; i < 3; i++) {
+      const bx = x + i * 40 * s;
+      const bh = (58 - i * 9) * s;
+      ink(rectPts(bx - 17 * s, y - bh, 34 * s, bh), {
+        fill: [C.yellow, C.orange, C.lilac][i], stroke: INK, lw: 3, seed: 110 + i,
+      });
+      ink(rectPts(bx - 12 * s, y - bh - 11 * s, 24 * s, 12 * s), {
+        fill: C.red, stroke: INK, lw: 2.6, seed: 120 + i, amt: 1.4,
+      });
+      squiggle(bx - 12 * s, y - bh * 0.45, bx + 12 * s, y - bh * 0.45, "#FFFFFF", 2.4, 2, 130 + i);
+    }
+    // 撒出来的药片
+    for (let i = 0; i < 5; i++) {
+      disc(x - 30 * s + i * 22 * s, y + 14 * s + _h(i) * 10, 6, {
+        fill: i % 2 ? C.cream : C.yellow, stroke: INK, lw: 2, seed: 140 + i, n: 10, amt: 1.2, passes: 1,
+      });
+    }
+  })(790, 150, 1.0);
+
+  // 左下：毛线团 + 两根毛衣针
+  (function yarn(x, y, s) {
+    disc(x, y, 46 * s, { fill: C.magenta, stroke: INK, lw: 3.4, seed: 200 });
+    for (let i = 0; i < 6; i++) {
+      roughArc(x, y, 30 * s + i * 3 * s, i * 0.7, i * 0.7 + 2.6, {
+        stroke: "rgba(43,21,51,0.55)", lw: 2, seed: 210 + i, n: 7, passes: 1,
+      });
+    }
+    bar(x + 20 * s, y - 30 * s, x + 84 * s, y - 78 * s, C.lilac, 5, 220);
+    bar(x + 26 * s, y - 20 * s, x + 92 * s, y - 62 * s, C.lilac, 5, 221);
+    disc(x + 86 * s, y - 80 * s, 7 * s, { fill: C.yellow, stroke: INK, lw: 2, seed: 222, n: 8 });
+    squiggle(x - 50 * s, y + 40 * s, x + 30 * s, y + 66 * s, C.magenta, 3, 6, 223);
+  })(120, 548, 1.0);
+
+  // 右下：一摞信和明信片
+  (function letters(x, y, s) {
+    for (let i = 0; i < 4; i++) {
+      ink(rectPts(x - 60 * s + i * 5 * s, y - 44 * s + i * 12 * s, 120 * s, 58 * s), {
+        fill: [C.cream, C.lilac, C.pink, C.cream][i], stroke: INK, lw: 2.8, seed: 230 + i, amt: 2.4,
+      });
+    }
+    disc(x + 34 * s, y - 2 * s, 13 * s, { fill: C.red, stroke: INK, lw: 2.4, seed: 240, n: 10 });
+    squiggle(x - 46 * s, y + 2 * s, x + 6 * s, y + 4 * s, "#B9905A", 2, 2, 241);
+    squiggle(x - 46 * s, y + 12 * s, x - 4 * s, y + 14 * s, "#B9905A", 2, 2, 242);
+  })(846, 548, 1.0);
+
+  // 散落的纽扣、线轴、顶针
+  (function bits() {
+    for (let i = 0; i < 16; i++) {
+      const x = 40 + _h(i * 3.7) * (W - 80);
+      const y = 40 + _h(i * 9.1 + 3) * (H - 90);
+      const cols = [C.teal, C.magenta, C.yellow, C.blue, C.orange, C.purple];
+      disc(x, y, 6 + _h(i) * 4, {
+        fill: cols[i % cols.length], stroke: INK, lw: 2, seed: 260 + i, n: 10, amt: 1.2, passes: 1,
+      });
+      if (i % 3 === 0) {
+        bar(x - 3, y - 2, x - 1, y + 2, INK, 1.6, 270 + i);
+        bar(x + 1, y - 2, x + 3, y + 2, INK, 1.6, 271 + i);
+      }
+    }
+    // 线轴 + 顶针
+    ink(rectPts(206, 600, 34, 40), { fill: C.yellow, stroke: INK, lw: 3, seed: 280 });
+    disc(223, 594, 20, { fill: C.orange, stroke: INK, lw: 2.4, squash: 0.4, seed: 281 });
+    disc(748, 610, 15, { fill: C.teal, stroke: INK, lw: 2.6, squash: 0.85, seed: 282, n: 12 });
+  })();
+}
+
+// ---------- 桌面上的东西 ----------
+function halo(radius, color, it, alpha = 0.55) {
+  pen.save();
+  const k = 0.35 + 0.28 * Math.sin(performance.now() / 420 + it.bob);
+  pen.globalAlpha = Math.max(0, k * alpha + 0.18);
+  disc(0, 0, radius, { stroke: color, lw: 3, seed: it.bob * 13, passes: 1, n: 20 });
+  pen.restore();
 }
 
 function drawItem(it) {
   const bobY = it.y + Math.sin(performance.now() / 700 + it.bob) * 3;
-  ctx.save();
-  ctx.translate(it.x, bobY);
-  if (it.kind === "diamond") {
-    ctx.fillStyle = "#7DE3F4";
-    ctx.beginPath();
-    ctx.moveTo(0, -it.r); ctx.lineTo(it.r * 0.8, 0); ctx.lineTo(0, it.r); ctx.lineTo(-it.r * 0.8, 0);
-    ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = "#D7F6FD"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(-it.r * 0.8, 0); ctx.lineTo(it.r * 0.8, 0); ctx.stroke();
-  } else if (it.kind === "gold") {
-    ctx.fillStyle = "#F2C14E";
-    ctx.beginPath();
-    for (let i = 0; i < 7; i++) {
-      const a = (i / 7) * Math.PI * 2;
-      const rr = it.r * (0.82 + 0.2 * Math.sin(i * 2.1));
-      ctx[i ? "lineTo" : "moveTo"](Math.cos(a) * rr, Math.sin(a) * rr);
+  pen.save();
+  pen.translate(it.x, bobY);
+  pen.rotate(Math.sin(it.bob) * 0.09);           // 每件东西都歪一点，不像图标
+  if (isHazard(it.kind)) drawHazardArt(it);
+  else drawTreasureArt(it);
+  pen.restore();
+}
+
+function drawTreasureArt(it) {
+  const r = it.r;
+  halo(r + 12, C.cream, it);
+  switch (it.kind) {
+    case "glasses": {
+      const L = r * 0.5;
+      bar(-L - 8, -3, -r * 1.15, -r * 0.6, INK, 4.5, 21);
+      bar(L + 8, -3, r * 1.15, -r * 0.6, INK, 4.5, 22);
+      disc(-L - 3, 0, L, { fill: "rgba(125,227,244,0.6)", stroke: C.magenta, lw: 4.5, seed: 23 });
+      disc(L + 3, 0, L, { fill: "rgba(125,227,244,0.6)", stroke: C.magenta, lw: 4.5, seed: 24 });
+      thickLine(-4, 0, 4, 0, C.magenta, 4);
+      bar(-L - 8, -L * 0.45, -L + 3, -L * 0.05, "#FFFFFF", 3, 26);
+      bar(L + 2, -L * 0.5, L + 10, -L * 0.1, "#FFFFFF", 3, 27);
+      break;
     }
-    ctx.closePath(); ctx.fill();
-    ctx.fillStyle = "#FFF3CF";
-    ctx.beginPath(); ctx.arc(-4, -5, 4, 0, Math.PI * 2); ctx.fill();
-  } else if (it.kind === "bag") {
-    ctx.fillStyle = "#C98C4B";
-    ctx.beginPath();
-    ctx.ellipse(0, 3, it.r * 0.85, it.r, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#8E5C2C";
-    ctx.fillRect(-it.r * 0.42, -it.r - 5, it.r * 0.84, 9);
-    ctx.fillStyle = "#F2C14E";
-    ctx.beginPath(); ctx.arc(0, 2, 5, 0, Math.PI * 2); ctx.fill();
-  } else {
-    ctx.fillStyle = "#2E3742";
-    ctx.beginPath(); ctx.arc(0, 0, it.r, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = "#5A6878"; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(0, -it.r); ctx.quadraticCurveTo(10, -it.r - 12, 18, -it.r - 6); ctx.stroke();
-    ctx.fillStyle = "#F28C3B";
-    ctx.beginPath(); ctx.arc(19, -it.r - 7, 3.5, 0, Math.PI * 2); ctx.fill();
+    case "necklace": {
+      const R = r * 0.82, cy = -r * 0.34;
+      roughArc(0, cy, R, Math.PI * 0.1, Math.PI * 0.9, { stroke: C.gold, lw: 4.5, seed: 31, n: 14 });
+      for (let i = 0; i <= 6; i++) {
+        const a = Math.PI * (0.1 + 0.8 * (i / 6));
+        disc(Math.cos(a) * R, cy + Math.sin(a) * R, 3.4, {
+          fill: i % 2 ? C.magenta : C.teal, stroke: INK, lw: 1.8, seed: 32 + i, n: 8, amt: 1, passes: 1,
+        });
+      }
+      const py = cy + R + 6;
+      thickLine(0, cy + R, 0, py - 4, C.gold, 3);
+      ink(ringPts(0, py, r * 0.3, 12), { fill: C.purple, stroke: INK, lw: 3, seed: 40 });
+      disc(-r * 0.1, py - r * 0.1, r * 0.1, { fill: C.yellow, stroke: null, seed: 41, n: 8 });
+      break;
+    }
+    case "earring": {
+      disc(0, -r * 0.15, r * 0.6, { fill: null, stroke: C.gold, lw: 5.5, seed: 51, n: 18 });
+      roughArc(0, -r * 0.15 - r * 0.6, r * 0.2, Math.PI * 0.15, Math.PI * 0.85, { stroke: C.gold, lw: 3, seed: 52, n: 6 });
+      thickLine(0, r * 0.35, 0, r * 0.52, C.gold, 3);
+      ink(ringPts(0, r * 0.75, r * 0.3, 12), { fill: C.red, stroke: INK, lw: 2.6, seed: 53 });
+      disc(-r * 0.1, r * 0.68, r * 0.08, { fill: C.cream, stroke: null, seed: 54, n: 8 });
+      break;
+    }
+    case "ring": {
+      disc(0, r * 0.28, r * 0.66, { fill: null, stroke: C.gold, lw: 7, seed: 61, n: 18, squash: 0.86 });
+      disc(0, r * 0.28, r * 0.4, { fill: null, stroke: "#8A5A00", lw: 2, seed: 62, n: 14, passes: 1 });
+      ink([{ x: 0, y: -r * 1.0 }, { x: r * 0.42, y: -r * 0.42 }, { x: 0, y: -r * 0.05 }, { x: -r * 0.42, y: -r * 0.42 }],
+        { fill: C.teal, stroke: INK, lw: 3, seed: 63, amt: 1.6 });
+      bar(-r * 0.42, -r * 0.42, r * 0.42, -r * 0.42, "#D7F6FD", 2.4, 64);
+      break;
+    }
+    case "brooch": {
+      flower(0, 0, r * 0.85, C.magenta, C.yellow, 71);
+      ink(ringPts(0, 0, r * 0.3, 10), { fill: C.teal, stroke: INK, lw: 2.6, seed: 78 });
+      break;
+    }
+    default: { // hairpin 发夹
+      const x1 = -r * 0.95, y1 = r * 0.85, x2 = r * 0.4, y2 = -r * 0.85;
+      thickLine(x1, y1, x2, y2, C.pink, 5);
+      flower(x1 + 2, y1, r * 0.5, C.orange, C.yellow, 83);
+      for (let i = 0; i < 3; i++) {
+        disc(x2 - i * 5, y2 + i * 9, 3.4, {
+          fill: C.purple, stroke: INK, lw: 1.6, seed: 90 + i, n: 8, amt: 1, passes: 1,
+        });
+      }
+    }
   }
-  ctx.restore();
 }
 
-function drawMiner() {
-  // 用摄像头画面本身当"人"，这里只画一顶矿工帽压在画面顶边
-  const { x, y } = ANCHOR;
-  ctx.fillStyle = "#F2C14E";
-  ctx.beginPath();
-  ctx.ellipse(x, y + 4, 26, 9, 0, Math.PI, 0);
-  ctx.fill();
-  ctx.fillRect(x - 26, y + 3, 52, 5);
-  ctx.fillStyle = "#E8EDF4";
-  ctx.beginPath(); ctx.arc(x, y - 2, 5, 0, Math.PI * 2); ctx.fill();
+function drawHazardArt(it) {
+  const r = it.r;
+  const t = performance.now();
+  if (it.kind === "bug") {
+    halo(r + 11, C.green, it, 0.5);
+    const wig = Math.sin(t / 150 + it.bob) * 3;
+    for (let i = 0; i < 3; i++) {
+      const bx = -r * 0.42 + i * r * 0.42;
+      for (const s of [-1, 1]) {
+        bar(bx, s * r * 0.28, bx + s * r * 0.45 + wig, s * r * 0.95, INK, 3.4, 120 + i * 2 + (s > 0 ? 1 : 0));
+      }
+    }
+    disc(0, 0, r * 0.76, { fill: C.green, stroke: INK, lw: 3.4, seed: 140, squash: 0.82, n: 16 });
+    bar(-r * 0.5, 0, r * 0.5, 0, INK, 2.6, 141);
+    for (let i = 0; i < 3; i++) {
+      disc(-r * 0.3 + i * r * 0.3, -r * 0.26, 3.4, {
+        fill: C.magenta, stroke: null, seed: 150 + i, n: 8, amt: 1, passes: 1,
+      });
+    }
+    // 头 + 触角
+    disc(-r * 0.88, 0, r * 0.3, { fill: C.purple, stroke: INK, lw: 2.6, seed: 160, n: 10 });
+    bar(-r * 1.05, -r * 0.1, -r * 1.45, -r * 0.62, INK, 2.6, 161);
+    bar(-r * 1.05, r * 0.1, -r * 1.5, r * 0.58, INK, 2.6, 162);
+  } else {
+    halo(r + 11, C.blue, it, 0.5);
+    // 拖出来的电线
+    const cord = [];
+    for (let i = 0; i <= 10; i++) {
+      const u = i / 10;
+      cord.push({ x: r * 0.5 + u * r * 1.0, y: r * 0.55 + Math.sin(u * 3.2 + 1) * r * 0.45 });
+    }
+    ink(cord, { stroke: INK, lw: 9, close: false, seed: 170, amt: 1.4, passes: 1 });
+    ink(cord, { stroke: C.deep, lw: 5, close: false, seed: 171, amt: 1.4, passes: 1 });
+    // 插头本体 + 两个插脚
+    ink(rectPts(-r * 0.72, -r * 0.3, r * 1.4, r * 1.0), { fill: "#3A2F4A", stroke: INK, lw: 3.4, seed: 175, amt: 2.4 });
+    ink(rectPts(-r * 0.45, -r * 1.02, r * 0.24, r * 0.78), { fill: C.gold, stroke: INK, lw: 2.6, seed: 176, amt: 1.4 });
+    ink(rectPts(r * 0.2, -r * 1.02, r * 0.24, r * 0.78), { fill: C.gold, stroke: INK, lw: 2.6, seed: 177, amt: 1.4 });
+    // 裸露的铜线，噼啪冒火花
+    bar(-r * 0.9, r * 0.25, r * 0.4, r * 0.62, C.orange, 4.5, 178);
+    bar(-r * 0.9, r * 0.62, r * 0.5, r * 0.3, C.orange, 4.5, 179);
+    const f = Math.floor(t / 110);
+    if (f % 3 !== 2) {
+      for (let i = 0; i < 4; i++) {
+        const a = -Math.PI * 0.85 + i * 0.55;
+        const len = r * (0.45 + 0.55 * _h(f + i * 2.3));
+        bar(-r * 0.25, r * 0.45, -r * 0.25 + Math.cos(a) * len, r * 0.45 + Math.sin(a) * len, C.yellow, 3, 180 + i);
+      }
+    }
+  }
 }
 
+// ---------- 老奶奶（摄像头那格就是她的脸） ----------
+function drawShawl() {
+  const { x, y, w, h } = PANEL;
+  const sy = y + h * 0.66;             // 披肩从画面下沿 1/3 处盖上来 = 她的肩膀
+  ink([
+    { x: x - 40, y: y + h + 26 },
+    { x: x - 6, y: sy + 6 },
+    { x: x + w / 2, y: sy - 6 },
+    { x: x + w + 6, y: sy + 6 },
+    { x: x + w + 40, y: y + h + 26 },
+  ], { fill: C.teal, stroke: INK, lw: 4, seed: 350, amt: 3 });
+  // 针织罗纹
+  for (let i = 0; i < 4; i++) {
+    const ry = sy + 14 + i * (h * 0.3 / 4);
+    const inset = 26 + i * 10;
+    bar(x + inset, ry, x + w - inset, ry + 6, "rgba(255,255,255,0.3)", 3, 360 + i);
+  }
+  // 领口滚边
+  for (let i = 0; i < 10; i++) {
+    const t = i / 9;
+    const bx = x - 2 + t * (w + 4);
+    const by = sy - 6 + Math.sin(t * Math.PI) * 14;
+    disc(bx, by, 3.4, { fill: C.magenta, stroke: INK, lw: 1.6, seed: 370 + i, n: 8, amt: 1, passes: 1 });
+  }
+}
+
+function drawGranny() {
+  const { x, y, w, h } = PANEL;
+  ink(rectPts(x - 13, y - 13, w + 26, h + 26), { fill: null, stroke: C.gold, lw: 6, seed: 300, amt: 3 });
+  ink(rectPts(x - 6, y - 6, w + 12, h + 12), { fill: null, stroke: C.magenta, lw: 2.4, seed: 301, amt: 3, passes: 1 });
+  flower(x - 13, y - 13, 12, C.magenta, C.yellow, 310);
+  flower(x + w + 13, y - 13, 12, C.teal, C.yellow, 320);
+  flower(x - 13, y + h * 0.5, 11, C.orange, C.yellow, 330);
+  flower(x + w + 13, y + h * 0.5, 11, C.purple, C.yellow, 340);
+  // 两边的白发
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 5; i++) {
+      disc(x + (side > 0 ? w + 5 : -5), y + 30 + i * 40, 16 - i * 1.4, {
+        fill: "#FAF3E7", stroke: INK, lw: 2.4, seed: 500 + side * 7 + i, amt: 2, passes: 1,
+      });
+    }
+  }
+  drawShawl();
+}
+
+// ---------- 伸出去的那只手 ----------
 function drawArm() {
   const arm = game.arm;
+  if (arm.len <= 3) return;
   const tip = tipPos();
-  const midX = ANCHOR.x + arm.dir.x * arm.len * 0.45;
-  const midY = ANCHOR.y + arm.dir.y * arm.len * 0.45;
-  ctx.lineCap = "round";
-  ctx.strokeStyle = "#3E6B8C"; ctx.lineWidth = 20;
-  ctx.beginPath(); ctx.moveTo(ANCHOR.x, ANCHOR.y - 4); ctx.lineTo(midX, midY); ctx.stroke();
-  ctx.strokeStyle = "#E8B98A"; ctx.lineWidth = 14;
-  ctx.beginPath(); ctx.moveTo(midX, midY); ctx.lineTo(tip.x, tip.y); ctx.stroke();
-
+  const mx = ANCHOR.x + arm.dir.x * arm.len * 0.5;
+  const my = ANCHOR.y + arm.dir.y * arm.len * 0.5;
   const ang = Math.atan2(arm.dir.y, arm.dir.x);
-  const spread = arm.carry ? 0.12 : 0.5;
-  ctx.strokeStyle = "#D9A05B"; ctx.lineWidth = 5;
-  for (const s of [-1, 1]) {
-    const a = ang + s * spread;
-    ctx.beginPath();
-    ctx.moveTo(tip.x, tip.y);
-    ctx.lineTo(tip.x + Math.cos(a) * 24, tip.y + Math.sin(a) * 24);
-    ctx.stroke();
+
+  // 针织袖
+  thickLine(ANCHOR.x, ANCHOR.y + 10, mx, my, C.magenta, 22);
+  const nx = Math.cos(ang + Math.PI / 2), ny = Math.sin(ang + Math.PI / 2);
+  pen.strokeStyle = "rgba(43,21,51,0.55)";
+  pen.lineWidth = 2.4;
+  for (let i = -3; i <= 3; i++) {
+    const bx = mx + nx * i * 6, by = my + ny * i * 6;
+    pen.beginPath();
+    pen.moveTo(bx - arm.dir.x * 9, by - arm.dir.y * 9);
+    pen.lineTo(bx + arm.dir.x * 9, by + arm.dir.y * 9);
+    pen.stroke();
   }
+
+  // 前臂 + 老年斑
+  thickLine(mx, my, tip.x, tip.y, C.skin, 13);
+  for (let i = 0; i < 4; i++) {
+    const u = 0.2 + i * 0.2;
+    disc(mx + (tip.x - mx) * u + nx * 3, my + (tip.y - my) * u + ny * 3, 2.2, {
+      fill: C.skinShade, stroke: null, seed: 430 + i, n: 6, amt: 1, passes: 1,
+    });
+  }
+
+  // 手：抓住东西时手指并拢，没抓到时张着
+  const spread = arm.carry ? 0.34 : 0.9;
+  disc(tip.x, tip.y, 11, { fill: C.skin, stroke: INK, lw: 3, seed: 400, n: 12 });
+  for (let i = -2; i <= 2; i++) {
+    const a = ang + (i / 2) * spread;
+    const fx = tip.x + Math.cos(a) * 14, fy = tip.y + Math.sin(a) * 14;
+    thickLine(tip.x, tip.y, fx, fy, C.skin, 5.5);
+  }
+}
+
+function drawPops() {
+  if (!game.pops) return;
+  pen.textAlign = "center";
+  pen.font = "600 21px system-ui";
+  pen.lineJoin = "round";
+  for (const p of game.pops) {
+    const k = Math.min(1, p.t / 1.1);
+    const y = p.y - 26 - k * 40;
+    pen.globalAlpha = Math.max(0, 1 - k * k);
+    pen.strokeStyle = INK;
+    pen.lineWidth = 5;
+    pen.strokeText(p.text, p.x, y);
+    pen.fillStyle = p.color;
+    pen.fillText(p.text, p.x, y);
+  }
+  pen.globalAlpha = 1;
+  pen.textAlign = "left";
 }
 
 // 摄像头画面：底部正中，镜像显示（像照镜子）+ 瞄准/诊断指示
@@ -659,10 +1075,10 @@ function drawPanel() {
     ctx.drawImage(video, 0, 0, w, h);
     ctx.restore();
   } else {
-    ctx.fillStyle = "#4A5766";
+    ctx.fillStyle = "#8C7BB5";
     ctx.font = "13px system-ui";
     ctx.textAlign = "center";
-    ctx.fillText(game.input === "mouse" ? "鼠标模式 · 没用摄像头" : "摄像头未开启", x + w / 2, y + h / 2);
+    ctx.fillText(game.input === "mouse" ? "鼠标模式 · 没用摄像头" : "摄像头还没亮", x + w / 2, y + h / 2);
     ctx.textAlign = "left";
   }
   ctx.restore();
@@ -691,12 +1107,15 @@ function drawPanel() {
     }
   }
 
-  ctx.strokeStyle = "#2A3543"; ctx.lineWidth = 1;
+  ctx.strokeStyle = INK; ctx.lineWidth = 2;
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
-  ctx.fillStyle = "#6C7C90"; ctx.font = "11px system-ui";
+  ctx.fillStyle = "#8C7BB5"; ctx.font = "12px system-ui";
   ctx.textAlign = "center";
-  ctx.fillText("你在这一格 · 画面只在本地，不上传", x + w / 2, y - 7);
-  if (game.debug) ctx.fillText(game.debug, x + w / 2, y + h + 15);
+  ctx.fillText("镜子里是奶奶 —— 画面只在本地，不上传", x + w / 2, y - 9);
+  if (game.debug) {
+    ctx.fillStyle = "#CDB4FF";
+    ctx.fillText(game.debug, x + w / 2, y - 24);
+  }
   ctx.textAlign = "left";
 }
 
@@ -712,14 +1131,14 @@ function drawCover(src, x, y, w, h) {
 
 // 结算画面：把"抓住最后一个"那一帧放到正中
 function drawResult() {
-  const won = game.items.filter((i) => i.kind !== "bomb").length === 0;
-  ctx.fillStyle = "rgba(10,14,20,0.82)";
+  const won = game.items.filter((i) => !isHazard(i.kind)).length === 0;
+  ctx.fillStyle = "rgba(43,21,51,0.86)";
   ctx.fillRect(0, 0, W, H);
 
   ctx.textAlign = "center";
-  ctx.fillStyle = won ? "#F2C14E" : "#E8EDF4";
-  ctx.font = "500 30px system-ui";
-  ctx.fillText(won ? "全部收完" : "游戏结束", W / 2, 104);
+  ctx.fillStyle = won ? C.yellow : "#F6EFE6";
+  ctx.font = "500 32px system-ui";
+  ctx.fillText(won ? "首饰都找齐了！" : "今天就找到这儿吧", W / 2, 104);
 
   const pw = 440, ph = 330;
   const px = W / 2 - pw / 2, py = 126;
@@ -733,37 +1152,37 @@ function drawResult() {
   if (snap.canvas) {
     drawCover(snap.canvas, px, py, pw, ph);
     // 底部压一层暗，让下面的字看得清
-    const g = ctx.createLinearGradient(0, py + ph * 0.55, 0, py + ph);
-    g.addColorStop(0, "rgba(10,14,20,0)");
-    g.addColorStop(1, "rgba(10,14,20,0.78)");
+    const g = ctx.createLinearGradient(0, py + ph * 0.5, 0, py + ph);
+    g.addColorStop(0, "rgba(43,21,51,0)");
+    g.addColorStop(1, "rgba(43,21,51,0.85)");
     ctx.fillStyle = g;
-    ctx.fillRect(px, py + ph * 0.55, pw, ph * 0.45);
-    ctx.fillStyle = "#E8EDF4";
-    ctx.font = "500 17px system-ui";
+    ctx.fillRect(px, py + ph * 0.5, pw, ph * 0.5);
+    ctx.fillStyle = "#FFF4DC";
+    ctx.font = "500 18px system-ui";
     ctx.fillText(
-      snap.label ? `抓到最后一个：${snap.label}` : "抓到最后一个的那一刻",
+      snap.label ? `最后找到的是：${snap.label}` : "她在找东西的那一刻",
       W / 2, py + ph - 22
     );
   } else {
-    ctx.fillStyle = "#4A5766";
+    ctx.fillStyle = "#8C7BB5";
     ctx.font = "14px system-ui";
     ctx.fillText("这一局没有摄像头画面（鼠标模式）", W / 2, py + ph / 2);
   }
   ctx.restore();
 
-  ctx.strokeStyle = won ? "#F2C14E" : "#41556B";
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = won ? C.yellow : "#8C7BB5";
+  ctx.lineWidth = 3;
   ctx.beginPath();
   if (ctx.roundRect) ctx.roundRect(px, py, pw, ph, 12); else ctx.rect(px, py, pw, ph);
   ctx.stroke();
 
-  ctx.fillStyle = "#E8EDF4";
+  ctx.fillStyle = "#FFF4DC";
   ctx.font = "500 20px system-ui";
-  ctx.fillText(`得分 ${game.score}`, W / 2, py + ph + 44);
+  ctx.fillText(`找到 ${game.score} 件首饰`, W / 2, py + ph + 44);
   ctx.font = "14px system-ui";
-  ctx.fillStyle = "#93A1B3";
+  ctx.fillStyle = "#CDB4FF";
   ctx.fillText(
-    snap.canvas ? "点「保存这一帧」存成 PNG · 点「重来一局」再来" : "点上方「重来一局」再来一次",
+    snap.canvas ? "点「保存这一帧」存成 PNG · 点「重来一局」再找一次" : "点上方「重来一局」再找一次",
     W / 2, py + ph + 76
   );
   ctx.textAlign = "left";
@@ -771,37 +1190,49 @@ function drawResult() {
 
 function drawOverlay() {
   if (game.flash > 0) {
-    ctx.fillStyle = `rgba(226,75,74,${game.flash * 0.5})`;
+    ctx.fillStyle = `rgba(${game.flashColor},${Math.min(0.62, game.flash * 0.72)})`;
     ctx.fillRect(0, 0, W, H);
   }
   if (game.phase === "over") {
     drawResult();
   } else if (game.phase === "ready") {
-    ctx.fillStyle = "rgba(10,14,20,0.6)";
+    ctx.fillStyle = "rgba(43,21,51,0.62)";
     ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = "#E8EDF4";
-    ctx.font = "500 22px system-ui";
+    ctx.fillStyle = "#FFF4DC";
+    ctx.font = "500 26px system-ui";
     ctx.textAlign = "center";
-    ctx.fillText("点「开始」", W / 2, H / 2);
+    ctx.fillText("帮老奶奶找她的首饰", W / 2, H / 2 - 6);
+    ctx.font = "15px system-ui";
+    ctx.fillStyle = "#CDB4FF";
+    ctx.fillText("点下方「开始」，站到镜头前", W / 2, H / 2 + 26);
     ctx.textAlign = "left";
   }
 }
 
 function draw(dt) {
+  if (!deskLayer) buildDesk();
   ctx.save();
   if (game.shake > 0) {
-    ctx.translate((Math.random() - 0.5) * 10 * game.shake, (Math.random() - 0.5) * 10 * game.shake);
+    const s = game.shake;
+    ctx.translate(
+      W / 2 + (Math.random() - 0.5) * 34 * s,
+      H / 2 + (Math.random() - 0.5) * 34 * s
+    );
+    ctx.rotate((Math.random() - 0.5) * 0.035 * s);
+    ctx.translate(-W / 2, -H / 2);
   }
-  drawBackground();
+  ctx.drawImage(deskLayer, 0, 0);
+  pen = ctx;
   for (const it of game.items) drawItem(it);
   drawArm();
   if (game.arm.carry) {
     const tip = tipPos();
     drawItem({ ...game.arm.carry, x: tip.x, y: tip.y + 18, bob: 0 });
   }
+  drawPops();
   ctx.restore();
   drawPanel();
-  drawMiner();
+  drawGranny();
   drawOverlay();
 }
 
@@ -852,8 +1283,9 @@ function loop(ts) {
 
   updateArm(dt, input.holding, input.dir);
 
-  if (game.flash > 0) game.flash = Math.max(0, game.flash - dt);
-  if (game.shake > 0) game.shake = Math.max(0, game.shake - dt * 2);
+  if (game.flash > 0) game.flash = Math.max(0, game.flash - dt * 1.2);
+  if (game.shake > 0) game.shake = Math.max(0, game.shake - dt * 1.1); // 抖久一点，撞一次要吓一跳
+  if (game.pops) game.pops = game.pops.filter((p) => (p.t += dt) < 1.1);
 
   draw(dt);
   updateDiag();
