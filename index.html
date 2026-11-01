@@ -7,74 +7,32 @@
 <style>
   :root {
     --bg: #2B1533;
-    --panel: #3D2647;
-    --ink: #FFF4DC;
-    --muted: #CDB4FF;
-    --gold: #FFD23F;
     --line: #5C3A6B;
-    --warn: #FF3D7F;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0;
     background: var(--bg);
-    color: var(--ink);
     font-family: "PingFang SC", "Helvetica Neue", system-ui, sans-serif;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 20px 16px 32px;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 18px 14px;
+    min-height: 100vh;
   }
-  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; letter-spacing: .02em; color: var(--gold); }
-  .sub { font-size: 13px; color: var(--muted); margin: 0 0 16px; text-align: center; }
-  .hud {
-    width: 960px; max-width: 100%;
-    display: flex; align-items: center; gap: 20px;
-    background: var(--panel); border: 2px solid var(--line);
-    border-radius: 12px; padding: 10px 14px; margin-bottom: 10px;
-  }
-  .stat { font-size: 13px; color: var(--muted); }
-  .stat b { color: var(--gold); font-weight: 600; font-size: 15px; }
-  .lives { display: flex; gap: 5px; }
-  .life { width: 12px; height: 12px; border-radius: 50%; background: #FF3D7F; box-shadow: 0 0 0 2px #2B1533 inset; }
-  .life.gone { background: #5C3A6B; }
-  #status {
-    margin-left: auto; font-size: 13px; color: var(--gold);
-    min-width: 320px; text-align: right;
-  }
+  /* 整个游戏都在这一块画布里：首页、下载进度条、玩法说明、按钮全画在里面 */
   canvas {
     width: 960px; max-width: 100%; height: auto;
     background: #E08A2B; border: 3px solid var(--line); border-radius: 14px;
     display: block; touch-action: none;
   }
-  .controls { width: 960px; max-width: 100%; display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
-  button {
-    font: inherit; font-size: 13px; color: var(--ink);
-    background: var(--panel); border: 2px solid var(--line);
-    border-radius: 10px; padding: 8px 14px; cursor: pointer;
-  }
-  button:hover { border-color: var(--gold); }
-  button.primary { background: #00B8A9; border-color: #0E8F84; color: #10222A; font-weight: 600; }
-  .hint { width: 960px; max-width: 100%; font-size: 12.5px; color: var(--muted); line-height: 1.7; margin-top: 12px; }
-  .hint code { color: var(--gold); }
-  .hint b { color: var(--ink); }
   /* 不能 display:none —— 某些浏览器会停止解码隐藏视频的帧，姿态就永远推不出来 */
   video { position: fixed; top: 0; left: 0; width: 2px; height: 2px; opacity: .01; pointer-events: none; }
-  .diag {
-    width: 960px; max-width: 100%;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11.5px; color: var(--muted);
-    background: var(--panel); border: 2px solid var(--line);
-    border-radius: 10px; padding: 7px 10px; margin-top: 10px;
-    word-break: break-all;
+  /* 只给读屏软件的状态行：看得见的人不需要，画面里已经写着了 */
+  #a11y {
+    position: absolute; width: 1px; height: 1px; margin: -1px;
+    padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
   }
-  .diag .warn { color: var(--warn); }
-  .tune {
-    width: 960px; max-width: 100%; display: flex; align-items: center; gap: 12px;
-    margin-top: 10px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap;
-  }
-  .tune input[type=range] { width: 180px; accent-color: var(--gold); }
-  .tune button { font-size: 12.5px; padding: 6px 12px; }
 
   /* 手碰到虫子/插头：整个窗口跟着抖 */
   @keyframes quake {
@@ -94,47 +52,8 @@
 </style>
 </head>
 <body>
-  <h1>Stretch Miner · 帮老奶奶找首饰</h1>
-  <p class="sub">老眼昏花的奶奶把眼镜、项链、耳环掉落在一张乱糟糟的桌面上 —— 你的身体往左/右挪一点，她的手就朝那边伸过去。<b>别碰虫子和裸露的插头。</b></p>
-
-  <div class="hud">
-    <span class="stat">找到 <b id="score">0</b></span>
-    <span class="stat">还没找到 <b id="left">0</b></span>
-    <span class="stat">还剩几次机会</span>
-    <span class="lives" id="lives"></span>
-    <span id="status" role="status" aria-live="polite">点「开始」授权摄像头</span>
-  </div>
-
-  <canvas id="stage" width="960" height="640"></canvas>
-
-  <div class="controls">
-    <button id="btnHead" class="primary">开始 · 不用手（身体左右挪）</button>
-    <button id="btnArm">开始 · 伸手臂控制</button>
-    <button id="btnMouse">鼠标试玩（不需要摄像头）</button>
-    <button id="btnRestart">重来一局</button>
-    <button id="btnSave" hidden>保存这一帧 PNG</button>
-  </div>
-
-  <div class="tune">
-    <label>灵敏度 <input id="sens" type="range" min="0" max="100" value="50"> <b id="sensVal">50</b></label>
-    <button id="btnCenter">以现在的位置为「中间」</button>
-    <span>数字越大越灵敏：手伸不出去就往右拉，老是自己乱伸就往左拉</span>
-  </div>
-
-  <div class="diag" id="diag">诊断：等待开始…</div>
-
-  <p class="hint">
-    摄像头那格就是<b>奶奶的脸</b>（镜像，像照镜子），她披着针织披肩，手从画面上沿伸出去。<br>
-    <b>怎么玩</b>：身体（或头）往左挪一点，手就朝左上方伸；一直偏着就一直长；挪回画面中间就极速收回。
-    找到眼镜 / 项链 / 耳环 / 戒指 / 胸针 / 发夹 +1 分；<b>碰到虫子或裸露的插头会整个窗口一震，并少一次机会</b>，一共三次；
-    桌上的首饰全部找完即结束，最后一帧会留在结算画面里。<br>
-    也可以切「伸手臂控制」：向斜上方举一只手并保持住。没有摄像头或被拒绝授权时会自动切到鼠标模式：
-    <b>按住鼠标</b>朝首饰的方向拖，松手即收回。摄像头必须在 <code>localhost</code> 或 HTTPS 下使用；
-    画面只在本地处理，不上传、不保存。<br>
-    <b>库和模型都已放在本地 <code>vendor/</code>，不需要联网</b>。用 <code>python3 serve.py</code> 启动最稳。
-    <b>没反应时看什么</b>：画布下方那行诊断。摄像头 ✓ + 模型 ✓ + 检测到人 ✓ 三个都亮了才算通；
-    哪个是 ✗ 就告诉我哪一项。三个都亮还是伸不出，就拉「灵敏度」滑块，或者坐正后点「以现在的位置为中间」再挪。
-  </p>
+  <canvas id="stage" width="960" height="640" aria-label="帮老奶奶找首饰 · 摄像头互动游戏"></canvas>
+  <div id="a11y" role="status" aria-live="polite"></div>
 
   <video id="cam" playsinline muted></video>
   <script type="module" src="game.js"></script>

@@ -5,19 +5,37 @@
 
 // 库和模型优先用仓库里的本地副本（与页面同源，别人打开也不需要访问 jsdelivr / Google）；
 // 本地取不到时再退回在线源。两套来源的库与 wasm 必须配对，不能混版本。
+// 每个来源都列出「要下载的 4 个文件」，进度条才有真实的分母。
+const CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+const GCS = "https://storage.googleapis.com/mediapipe-models/pose_landmarker";
 const SOURCES = [
-  { name: "本地", lib: "./vendor/vision_bundle.mjs", wasm: "./vendor/wasm" },
   {
-    name: "CDN",
-    lib: "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs",
-    wasm: "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm",
+    name: "本地",
+    lib: "./vendor/vision_bundle.mjs",
+    wasm: "./vendor/wasm",
+    models: ["./vendor/models/pose_landmarker_lite.task"],
+  },
+  {
+    name: "网络",
+    lib: `${CDN}/vision_bundle.mjs`,
+    wasm: `${CDN}/wasm`,
+    models: [
+      `${GCS}/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
+      `${GCS}/pose_landmarker_full/float16/1/pose_landmarker_full.task`,
+    ],
   },
 ];
-const MODEL_URLS = [
-  "./vendor/models/pose_landmarker_lite.task",
-  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
-  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
-];
+// 各文件的标称体积（字节）—— 用来算百分比；真下载时以响应头为准，拿不到就用它
+const SIZE = {
+  lib: 137 * 1024,
+  loader: 210 * 1024,
+  wasm: 9423986,
+  modelLite: 5777746,
+  modelFull: 29 * 1024 * 1024,
+};
+const KB = 1024, MB = 1024 * 1024;
+const fmtBytes = (b) =>
+  b >= MB ? `${(b / MB).toFixed(1)} MB` : `${Math.max(1, Math.round(b / KB))} KB`;
 
 const canvas = document.getElementById("stage");
 const ctx = canvas.getContext("2d");
@@ -25,15 +43,10 @@ const W = canvas.width;
 const H = canvas.height;
 const video = document.getElementById("cam");
 
+// 界面全部画在画布里，页面下方不再有任何文字/按钮。
+// 只留一个看不见的 live region 给读屏软件。
 const el = {
-  score: document.getElementById("score"),
-  left: document.getElementById("left"),
-  lives: document.getElementById("lives"),
-  status: document.getElementById("status"),
-  diag: document.getElementById("diag"),
-  sens: document.getElementById("sens"),
-  sensVal: document.getElementById("sensVal"),
-  save: document.getElementById("btnSave"),
+  status: document.getElementById("a11y"),
 };
 
 // 摄像头画面：画布底部正中 —— 奶奶的脸就在这格里
@@ -147,7 +160,7 @@ function thresholds() {
 }
 
 const game = {
-  phase: "ready",        // ready | playing | over
+  phase: "home",         // home（首页）| loading（下载中）| playing | over
   input: "none",         // head | arm | mouse
   score: 0,
   lives: 3,
@@ -164,7 +177,41 @@ const game = {
   centerX: 0.5,     // 校准后的"中间"位置
   trackX: 0.5,      // 实时测到的身体横向位置
   armInfo: "",
+  status: "",       // 画在画布里那行状态（不再用 DOM 显示）
 };
+
+// ---------- 画布里的界面系统 ----------
+// 所有按钮都是画布上的一块区域：绘制时登记，点击时按区域命中。
+const ui = {
+  hits: [],                       // 本帧登记的按钮 {x,y,w,h,action}
+  click: null,                    // 待处理的点击（画布坐标）
+  hover: { x: -999, y: -999, on: false },
+  drag: null,                     // 正在拖的滑块
+};
+const inRect = (p, x, y, w, h) => p && p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h;
+
+// ---------- 下载进度 ----------
+const loader = {
+  on: false,
+  done: 0,        // 已完成的字节（按标称体积折算）
+  total: 1,       // 本次要下的总字节
+  fileDone: 0,    // 当前文件已下
+  fileTotal: 0,   // 当前文件总字节（响应头拿得到就用真的）
+  stage: "",      // 当前在干什么："识别库" / "识别引擎" / "姿态模型"
+  step: 0,
+  steps: 4,
+  speed: 0,       // 字节/秒
+  t0: 0,
+  woke: false,    // 文件下完了，正在唤醒模型
+  err: "",
+};
+function loaderPct() {
+  if (loader.woke) return 1;
+  if (!loader.total) return 0;
+  const base = loader.done;
+  const partial = loader.fileTotal ? Math.min(loader.fileTotal, loader.fileDone) : 0;
+  return Math.max(0, Math.min(1, (base + partial) / loader.total));
+}
 
 // 摄像头链路的实时状态，全部显示在诊断面板上
 const poseState = {
@@ -252,7 +299,7 @@ function place(items, kind, r, minGap, tries = 200) {
   for (let t = 0; t < tries; t++) {
     const p = {
       x: 70 + Math.random() * (W - 140),
-      y: 64 + Math.random() * 266,
+      y: 104 + Math.random() * 232,   // 顶部留给画布里的 HUD 和状态行
     };
     if (Math.hypot(p.x - ANCHOR.x, p.y - ANCHOR.y) < 170) continue;
     if (items.some((it) => Math.hypot(it.x - p.x, it.y - p.y) < minGap)) continue;
@@ -280,7 +327,6 @@ function reset() {
   game.lean = 0;
   snap.canvas = null;   // 上一局的定格帧不留下
   snap.label = "";
-  el.save.hidden = true;
   layout();
   syncHud();
   if (game.input === "head") setStatus("奶奶要看清了 —— 身体往左/右挪一点，手就朝那边伸过去");
@@ -289,18 +335,24 @@ function reset() {
 }
 
 // ---------- HUD ----------
-function syncHud() {
-  el.score.textContent = String(game.score);
-  el.left.textContent = String(game.items.filter((i) => !isHazard(i.kind)).length);
-  el.lives.innerHTML = "";
-  for (let i = 0; i < 3; i++) {
-    const d = document.createElement("span");
-    d.className = "life" + (i < game.lives ? "" : " gone");
-    el.lives.appendChild(d);
-  }
-}
+// 分数/机会/状态都画在画布里，这里只留一份给读屏软件的文本。
+function syncHud() { /* 画布每帧自己读 game.score / game.lives，无需同步 DOM */ }
 function setStatus(text) {
-  el.status.textContent = text;
+  game.status = text;
+  if (el.status) el.status.textContent = text;
+}
+// 画布里那行状态：一行装得下的长度才有用，太长会被裁掉
+function drawStatusLine() {
+  if (!game.status || (game.phase !== "playing" && game.phase !== "over")) return;
+  const text = game.status;
+  ctx.font = "600 15px system-ui";
+  const w = Math.min(W - 40, ctx.measureText(text).width + 34);
+  const x = W / 2 - w / 2, y = 58, h = 30;
+  ink(rectPts(x, y, w, h), { fill: "rgba(255,244,220,0.94)", stroke: INK, lw: 3, seed: 71, amt: 2.4 });
+  ctx.fillStyle = INK;
+  ctx.textAlign = "center";
+  ctx.fillText(text, W / 2, y + 20);
+  ctx.textAlign = "left";
 }
 
 // ---------- 手臂状态机 ----------
@@ -422,13 +474,12 @@ function finish(won) {
   game.arm.mode = "back";
   // 一个宝物都没抓到就结束（比如三条命都撞炸弹）：至少留一帧当下的画面
   if (!snap.canvas) snapCamera("");
-  el.save.hidden = !snap.canvas;
   syncHud();
   if (won) {
-    setStatus(`首饰全找齐了！共 ${game.score} 件 —— 点「重来一局」`);
+    setStatus(`首饰全找齐了！共 ${game.score} 件`);
     sfxWin();
   } else {
-    setStatus("哎呀，折腾坏了 —— 点「重来一局」再找一次");
+    setStatus("哎呀，折腾坏了 —— 再找一次吧");
     sfxLose();
   }
 }
@@ -439,57 +490,165 @@ let lastVideoTime = -1;
 let lastInput = { holding: false, dir: null };   // 上一帧的有效结果（防抖用）
 const HOLD_MS = 400;                              // 丢失检测后维持上一结果的时间
 
+// ---------- 带进度的下载 ----------
+// 用 Cache API 把取到的文件存起来：第二次打开同一台电脑就是秒开，不用再下 15 MB。
+let diskCache;
+async function getCache() {
+  if (diskCache !== undefined) return diskCache;
+  try {
+    diskCache = (window.caches && (await caches.open("stretch-miner-v1"))) || null;
+  } catch {
+    diskCache = null;
+  }
+  return diskCache;
+}
+
+// 一个文件一个文件地读，边读边把字节数报给进度条
+async function fetchWithProgress(file, token) {
+  const cache = await getCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(file.url);
+      if (hit) {
+        loader.fileTotal = file.size;
+        loader.fileDone = file.size;   // 已在本地：这一步直接算下完
+        return new Uint8Array(await hit.arrayBuffer());
+      }
+    } catch { /* 缓存不可用就照常下载 */ }
+  }
+
+  const res = await fetch(file.url);
+  if (!res.ok) throw new Error(`${res.status} · ${file.url.split("/").pop()}`);
+  const total = Number(res.headers.get("content-length")) || file.size;
+  loader.fileTotal = total;
+  loader.fileDone = 0;
+
+  let out;
+  if (res.body && res.body.getReader) {
+    const reader = res.body.getReader();
+    const chunks = [];
+    let got = 0, n = 0;
+    const t0 = performance.now();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (token !== loadToken) {
+        try { await reader.cancel(); } catch { /* 忽略 */ }
+        throw new Error("cancelled");
+      }
+      chunks.push(value);
+      got += value.length;
+      loader.fileDone = got;
+      loader.speed = got / Math.max(0.25, (performance.now() - t0) / 1000);
+      if (++n % 8 === 0) await new Promise((r) => setTimeout(r, 0)); // 让画面有机会刷新
+    }
+    out = new Uint8Array(got);
+    let off = 0;
+    for (const c of chunks) { out.set(c, off); off += c.length; }
+  } else {
+    out = new Uint8Array(await res.arrayBuffer());
+    loader.fileDone = out.length;
+  }
+
+  if (cache) {
+    try { await cache.put(file.url, new Response(out.slice())); } catch { /* 存不下就算了 */ }
+  }
+  return out;
+}
+
 async function loadPose() {
   if (poseLandmarker) return poseLandmarker;
   let lastErr = null;
+  const token = loadToken;
 
   for (const src of SOURCES) {
-    let lib;
-    try {
-      setStatus(`正在加载姿态库（${src.name}）…`);
-      lib = await import(/* @vite-ignore */ src.lib);
-    } catch (err) {
-      lastErr = err;
-      continue;
-    }
-    let fileset;
-    try {
-      fileset = await lib.FilesetResolver.forVisionTasks(src.wasm);
-    } catch (err) {
-      lastErr = err;
-      continue;
-    }
-    const build = (delegate, url) => ({
-      baseOptions: { modelAssetPath: url, delegate },
-      runningMode: "VIDEO",
-      numPoses: 1,
-      minPoseDetectionConfidence: 0.4,
-      minPosePresenceConfidence: 0.4,
-      minTrackingConfidence: 0.4,
-    });
-    for (const url of MODEL_URLS) {
-      setStatus(`正在下载姿态模型（${src.name}）…`);
-      for (const delegate of ["GPU", "CPU"]) {
-        try {
-          poseLandmarker = await lib.PoseLandmarker.createFromOptions(fileset, build(delegate, url));
-          poseState.model = true;
-          poseState.delegate = delegate;
-          poseState.lib = src.name;
-          poseState.modelUrl = `${src.name}·${url.includes("lite") ? "lite" : "full"}`;
-          return poseLandmarker;
-        } catch (err) {
-          lastErr = err;
-          poseLandmarker = null;
+    for (const modelUrl of src.models) {
+      if (token !== loadToken) return null;
+      const plan = [
+        { key: "lib", label: "识别库", url: src.lib, size: SIZE.lib },
+        { key: "loader", label: "识别引擎", url: `${src.wasm}/vision_wasm_internal.js`, size: SIZE.loader },
+        { key: "wasm", label: "识别引擎", url: `${src.wasm}/vision_wasm_internal.wasm`, size: SIZE.wasm },
+        {
+          key: "model",
+          label: "姿态模型",
+          url: modelUrl,
+          size: modelUrl.includes("full") ? SIZE.modelFull : SIZE.modelLite,
+        },
+      ];
+      loader.total = plan.reduce((a, f) => a + f.size, 0);
+      loader.done = 0;
+      loader.fileDone = 0;
+      loader.fileTotal = 0;
+      loader.speed = 0;
+      loader.steps = plan.length;
+      loader.step = 0;
+      try {
+        const bytes = {};
+        for (const f of plan) {
+          loader.stage = f.label;
+          loader.step += 1;
+          bytes[f.key] = await fetchWithProgress(f, token);
+          loader.done += f.size;
+          loader.fileDone = 0;
+          loader.fileTotal = 0;
+          if (token !== loadToken) return null;
         }
+        loader.woke = true;
+        loader.stage = "唤醒模型";
+        // 库已经取过一遍（浏览器有缓存），这里按原地址 import
+        const lib = await import(/* @vite-ignore */ src.lib);
+        const fileset = await lib.FilesetResolver.forVisionTasks(src.wasm);
+        for (const delegate of ["GPU", "CPU"]) {
+          try {
+            poseLandmarker = await lib.PoseLandmarker.createFromOptions(fileset, {
+              baseOptions: { modelAssetBuffer: bytes.model, delegate },
+              runningMode: "VIDEO",
+              numPoses: 1,
+              minPoseDetectionConfidence: 0.4,
+              minPosePresenceConfidence: 0.4,
+              minTrackingConfidence: 0.4,
+            });
+            poseState.model = true;
+            poseState.delegate = delegate;
+            poseState.lib = src.name;
+            poseState.modelUrl = `${src.name}·${modelUrl.includes("lite") ? "lite" : "full"}`;
+            return poseLandmarker;
+          } catch (err) {
+            lastErr = err;
+            poseLandmarker = null;
+          }
+        }
+      } catch (err) {
+        lastErr = err;
       }
+      loader.woke = false;
     }
   }
   poseState.err = String(lastErr || "unknown");
   throw lastErr || new Error("pose model failed");
 }
 
+let loadToken = 0;   // 每次「返回首页」都会 +1，让还在跑的下载自己作废
+
 async function startCamera(mode = "head") {
   if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)();
+  game.input = mode;
+  if (poseLandmarker) { reset(); return; }   // 已经取过模型：直接开玩，不用再等
+
+  // 先给一个"在动"的画面，别让人以为卡死了
+  game.phase = "loading";
+  loader.on = true;
+  loader.err = "";
+  loader.woke = false;
+  loader.done = 0;
+  loader.fileDone = 0;
+  loader.fileTotal = 0;
+  loader.speed = 0;
+  loader.stage = "打开摄像头";
+  loader.step = 0;
+  loader.steps = 4;
+  setStatus("");
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
     video.srcObject = stream;
@@ -501,23 +660,46 @@ async function startCamera(mode = "head") {
     });
   } catch (err) {
     poseState.err = "getUserMedia: " + (err && err.name ? err.name : err);
+    loader.on = false;
     setStatus("摄像头不可用或被拒绝 —— 已切到鼠标模式");
     startMouse();
     return;
   }
+
+  loadToken += 1;
   try {
     await loadPose();
   } catch (err) {
-    setStatus("姿态模型加载失败 —— 已切到鼠标模式（看下方诊断）");
+    loader.on = false;
+    loader.err = String(err);
+    setStatus("姿态模型没取到 —— 已切到鼠标模式");
     startMouse();
     return;
   }
-  game.input = mode;
+  if (game.phase !== "loading") return;   // 中途点了「返回首页」
+  loader.on = false;
   reset();
+}
+
+function goHome() {
+  loadToken += 1;          // 让还在跑的下载作废
+  loader.on = false;
+  game.phase = "home";
+  game.input = "none";
+  game.arm.mode = "idle";
+  game.arm.len = 0;
+  game.arm.carry = null;
+  if (video.srcObject) {
+    video.srcObject.getTracks().forEach((t) => t.stop());
+    video.srcObject = null;
+  }
+  poseState.person = false;
+  setStatus("");
 }
 
 function startMouse() {
   if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)();
+  loader.on = false;
   game.input = "mouse";
   reset();
 }
@@ -643,20 +825,55 @@ function mouseInput() {
   return { holding: mouse.active, dir: { x: ux / mm, y: uy / mm } };
 }
 
+// 画布里 HUD 上两个控件的固定位置（画布坐标）
+const HUD_BAR = { x: 14, y: 10, w: W - 28, h: 48 };
+const SENS_BAR = { x: 500, y: 30, w: 130 };   // 灵敏度滑块轨道
+const BTN_CAL = { x: 648, y: 18, w: 104, h: 32 };
+const BTN_HOME = { x: 764, y: 18, w: 74, h: 32 };
+
+function setSensFromX(x) {
+  const t = Math.max(0, Math.min(1, (x - SENS_BAR.x) / SENS_BAR.w));
+  sens = Math.round(t * 100) / 100;
+}
+
 canvas.addEventListener("pointerdown", (e) => {
-  if (game.input !== "mouse") return;
-  mouse.active = true;
-  setPointer(e);
-  try { canvas.setPointerCapture(e.pointerId); } catch { /* 合成事件或不支持时忽略 */ }
+  const p = canvasPoint(e);
+  ui.hover = { x: p.x, y: p.y, on: true };
+  ui.click = { x: p.x, y: p.y };   // 画布里的按钮在这一帧绘制时按区域命中
+
+  // 拖灵敏度滑块：别让它被当成"点按钮"或"伸手臂"
+  if (game.phase === "playing" &&
+      inRect(p, SENS_BAR.x - 12, SENS_BAR.y - 14, SENS_BAR.w + 24, 32)) {
+    ui.click = null;
+    ui.drag = "sens";
+    setSensFromX(p.x);
+    try { canvas.setPointerCapture(e.pointerId); } catch { /* 忽略 */ }
+    return;
+  }
+  // 鼠标模式下：在点 HUD 以下的地方按住 = 伸手臂
+  if (game.input === "mouse" && game.phase === "playing" && p.y > HUD_BAR.y + HUD_BAR.h + 6) {
+    mouse.active = true;
+    setPointer(p);
+    try { canvas.setPointerCapture(e.pointerId); } catch { /* 忽略 */ }
+  }
 });
 canvas.addEventListener("pointermove", (e) => {
-  if (game.input === "mouse") setPointer(e);
+  const p = canvasPoint(e);
+  ui.hover = { x: p.x, y: p.y, on: true };
+  if (ui.drag === "sens") setSensFromX(p.x);
+  else if (game.input === "mouse" && game.phase === "playing") setPointer(p);
 });
-window.addEventListener("pointerup", () => { mouse.active = false; });
-function setPointer(e) {
+canvas.addEventListener("pointerleave", () => {
+  ui.hover = { x: -999, y: -999, on: false };
+});
+window.addEventListener("pointerup", () => { mouse.active = false; ui.drag = null; });
+function canvasPoint(e) {
   const r = canvas.getBoundingClientRect();
-  mouse.x = ((e.clientX - r.left) / r.width) * W;
-  mouse.y = ((e.clientY - r.top) / r.height) * H;
+  return { x: ((e.clientX - r.left) / r.width) * W, y: ((e.clientY - r.top) / r.height) * H };
+}
+function setPointer(p) {
+  mouse.x = p.x;
+  mouse.y = p.y;
 }
 
 // ---------- 绘制 ----------
@@ -1176,36 +1393,276 @@ function drawResult() {
   if (ctx.roundRect) ctx.roundRect(px, py, pw, ph, 12); else ctx.rect(px, py, pw, ph);
   ctx.stroke();
 
+  ctx.textAlign = "center";
   ctx.fillStyle = "#FFF4DC";
-  ctx.font = "500 20px system-ui";
-  ctx.fillText(`找到 ${game.score} 件首饰`, W / 2, py + ph + 44);
-  ctx.font = "14px system-ui";
+  ctx.font = "600 20px system-ui";
+  ctx.fillText(`找到 ${game.score} 件首饰`, W / 2, py + ph + 40);
+  ctx.font = "13px system-ui";
   ctx.fillStyle = "#CDB4FF";
-  ctx.fillText(
-    snap.canvas ? "点「保存这一帧」存成 PNG · 点「重来一局」再找一次" : "点上方「重来一局」再找一次",
-    W / 2, py + ph + 76
-  );
+  ctx.fillText("这一局只在电脑里留过画面，没上传过任何东西", W / 2, py + ph + 62);
   ctx.textAlign = "left";
+
+  // 结算页的按钮也画在画布里
+  const n = snap.canvas ? 3 : 2;
+  const bw = 152, gap = 16, by = py + ph + 80;
+  let bx = W / 2 - (n * bw + (n - 1) * gap) / 2;
+  uiButton(bx, by, bw, 46, "再找一次", {
+    fill: C.teal, fs: 17, seed: 851,
+    action: () => { if (game.input === "none") game.input = "mouse"; reset(); },
+  });
+  bx += bw + gap;
+  if (snap.canvas) {
+    uiButton(bx, by, bw, 46, "保存这一帧", { fill: C.yellow, fs: 17, seed: 852, action: saveSnap });
+    bx += bw + gap;
+  }
+  uiButton(bx, by, bw, 46, "回首页", {
+    fill: "#FFF4DC", hot: C.yellow, text: "#241230", fs: 17, seed: 853, action: goHome,
+  });
+}
+
+function saveSnap() {
+  if (!snap.canvas) return;
+  snap.canvas.toBlob((blob) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "stretch-miner-last-catch.png";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+  });
+}
+
+// ---------- 画布里的按钮 ----------
+function uiButton(x, y, w, h, label, o = {}) {
+  const opt = {
+    sub: "", fill: C.teal, hot: C.yellow, text: "#241230", hotText: "#241230",
+    fs: 18, seed: 17, ...o,
+  };
+  const hot = inRect(ui.hover, x, y, w, h);
+  pen = ctx;
+  ink(rectPts(x + 5, y + 6, w, h), { fill: "rgba(43,21,51,0.3)", stroke: null, seed: opt.seed + 3, amt: 3 });
+  ink(rectPts(x, y, w, h), {
+    fill: hot ? opt.hot : opt.fill, stroke: INK, lw: 3.4, seed: opt.seed, amt: 3.2,
+  });
+  ctx.fillStyle = hot ? opt.hotText : opt.text;
+  ctx.textAlign = "center";
+  if (opt.sub) {
+    ctx.font = `700 ${opt.fs}px system-ui`;
+    ctx.fillText(label, x + w / 2, y + h / 2 - 1);
+    ctx.font = "12.5px system-ui";
+    ctx.globalAlpha = 0.8;
+    ctx.fillText(opt.sub, x + w / 2, y + h / 2 + 17);
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.font = `700 ${opt.fs}px system-ui`;
+    ctx.fillText(label, x + w / 2, y + h / 2 + opt.fs * 0.35);
+  }
+  ctx.textAlign = "left";
+  ui.hits.push({ x, y, w, h });
+  if (ui.click && inRect(ui.click, x, y, w, h)) {
+    ui.click = null;
+    if (opt.action) opt.action();
+  }
+}
+
+// 一颗会转的毛线球 —— 进度条的"头"
+function drawYarnBall(cx, cy, r, t) {
+  pen = ctx;
+  disc(cx, cy, r, { fill: C.magenta, stroke: INK, lw: 3, seed: 620, amt: 1.8 });
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(t);
+  ctx.strokeStyle = "rgba(255,244,220,0.85)";
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 0.78, r * 0.34, (i * Math.PI) / 3, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+  // 拖在球后面的一小截线
+  bar(cx - r - 16, cy + 3, cx - r + 2, cy - 2, INK, 2.4, 631, 1.6);
+}
+
+// ---------- 首页（画在画布里） ----------
+function drawHome() {
+  ctx.fillStyle = "rgba(43,21,51,0.58)";
+  ctx.fillRect(0, 0, W, H);
+  pen = ctx;
+  const cx = 150, cy = 56, cw = 660, ch = 528;
+  ink(rectPts(cx + 9, cy + 11, cw, ch), { fill: "rgba(20,8,26,0.35)", stroke: null, seed: 911, amt: 3 });
+  ink(rectPts(cx, cy, cw, ch), { fill: C.cream, stroke: INK, lw: 4.5, seed: 910, amt: 3.4 });
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = INK;
+  ctx.font = "700 38px system-ui";
+  ctx.fillText("帮奶奶找首饰", W / 2, cy + 76);
+  ctx.font = "14.5px system-ui";
+  ctx.fillStyle = "#5C3A6B";
+  ctx.fillText("老眼昏花的奶奶把眼镜、项链、耳环掉在一张乱糟糟的桌上了", W / 2, cy + 106);
+  ctx.textAlign = "left";
+
+  // 标题两边摆两件首饰当装饰
+  drawItem({ kind: "glasses", r: 24, x: cx + 54, y: cy + 82, bob: 0.6 });
+  drawItem({ kind: "necklace", r: 26, x: cx + cw - 54, y: cy + 82, bob: 2.1 });
+
+  ctx.textAlign = "center";
+  ctx.font = "14px system-ui";
+  ctx.fillStyle = "#3D2647";
+  ctx.fillText("怎么玩：身体（或头）往左／右挪一点，奶奶的手就朝那个斜上方伸过去；", W / 2, cy + 154);
+  ctx.fillText("一直偏着就一直长，挪回画面中间就极速收回。碰到虫子或裸露的插头要震一下、少一次机会，共三次。", W / 2, cy + 178);
+  ctx.textAlign = "left";
+
+  const bw = 452, bx = W / 2 - bw / 2;
+  uiButton(bx, cy + 200, bw, 64, "开始 · 不用手（身体左右挪）", {
+    sub: "推荐：坐着就能玩，手不用举着", fill: C.teal, seed: 921, action: () => startCamera("head"),
+  });
+  uiButton(bx, cy + 278, bw, 64, "开始 · 伸手臂控制", {
+    sub: "向斜上方举起一只手并保持住", fill: C.magenta, hot: C.yellow,
+    text: "#FFF4DC", hotText: "#241230", seed: 922, action: () => startCamera("arm"),
+  });
+  uiButton(bx, cy + 356, bw, 52, "鼠标试玩（不用摄像头）", {
+    fill: "#FFF4DC", hot: C.yellow, text: "#241230", fs: 16, seed: 923, action: startMouse,
+  });
+
+  ctx.textAlign = "center";
+  ctx.font = "12.5px system-ui";
+  ctx.fillStyle = "#5C3A6B";
+  ctx.fillText("第一次开始会取约 15 MB 的姿态模型 —— 有进度条，不是卡住；之后这台电脑会记住它，几秒就开。", W / 2, cy + 436);
+  ctx.fillText("摄像头画面只在你自己的电脑里处理，不上传、不保存。", W / 2, cy + 458);
+  ctx.textAlign = "left";
+}
+
+// ---------- 下载进度（画在画布里） ----------
+function drawLoading() {
+  ctx.fillStyle = "rgba(43,21,51,0.74)";
+  ctx.fillRect(0, 0, W, H);
+  pen = ctx;
+  const cx = 170, cy = 140, cw = 620, ch = 350;
+  ink(rectPts(cx + 9, cy + 11, cw, ch), { fill: "rgba(20,8,26,0.35)", stroke: null, seed: 811, amt: 3 });
+  ink(rectPts(cx, cy, cw, ch), { fill: C.cream, stroke: INK, lw: 4.5, seed: 810, amt: 3.4 });
+
+  const t = performance.now() / 1000;
+  const pct = loaderPct();
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = INK;
+  ctx.font = "700 26px system-ui";
+  ctx.fillText("正在给奶奶借一双“眼睛”", W / 2, cy + 58);
+  ctx.font = "13.5px system-ui";
+  ctx.fillStyle = "#5C3A6B";
+  ctx.fillText("第一次要取约 15 MB，之后这台电脑会记住 —— 下面这根线绕完就能玩", W / 2, cy + 88);
+  ctx.textAlign = "left";
+
+  // 百分比 + 字节
+  ctx.font = "700 34px system-ui";
+  ctx.fillStyle = C.magenta;
+  ctx.fillText(`${Math.round(pct * 100)}%`, cx + 42, cy + 146);
+  ctx.textAlign = "right";
+  ctx.font = "13.5px system-ui";
+  ctx.fillStyle = "#5C3A6B";
+  const doneB = Math.min(loader.total, loader.done + loader.fileDone);
+  const speedTxt = loader.speed > 1024 ? ` · ${fmtBytes(loader.speed)}/秒` : "";
+  ctx.fillText(`${fmtBytes(doneB)} / ${fmtBytes(loader.total)}${speedTxt}`, cx + cw - 42, cy + 146);
+  ctx.textAlign = "left";
+
+  // 进度条
+  const bx = cx + 42, by = cy + 164, bw = cw - 84, bh = 32;
+  ink(rectPts(bx, by, bw, bh), { fill: "#EFDFC0", stroke: INK, lw: 3.2, seed: 820, amt: 2.6 });
+  const fw = (bw - 8) * pct;
+  if (fw > 3) {
+    ink(rectPts(bx + 4, by + 4, fw, bh - 8), { fill: C.teal, stroke: null, seed: 821, amt: 2.2 });
+    // 填色里走几道"毛线"的斜纹
+    for (let i = 0; i < Math.floor(fw / 22); i++) {
+      const sx = bx + 10 + i * 22;
+      bar(sx, by + bh - 6, sx + 9, by + 6, "rgba(255,255,255,0.35)", 3, 830 + i, 1.4);
+    }
+  }
+  drawYarnBall(bx + 4 + fw, by + bh / 2, 16, t * 2.2);
+
+  // 正在下哪一步
+  ctx.textAlign = "center";
+  ctx.font = "600 15px system-ui";
+  ctx.fillStyle = INK;
+  const stepTxt = loader.woke
+    ? "正在唤醒模型… 马上就好"
+    : `第 ${Math.max(1, loader.step)}/${loader.steps} 步 · ${loader.stage}` +
+      (loader.fileTotal ? `（${fmtBytes(loader.fileDone)} / ${fmtBytes(loader.fileTotal)}）` : "");
+  ctx.fillText(stepTxt, W / 2, by + bh + 34);
+  ctx.font = "13px system-ui";
+  ctx.fillStyle = "#5C3A6B";
+  ctx.fillText(loader.speed || loader.woke ? "没卡住 —— 线还在一圈一圈绕" : "正在接通…", W / 2, by + bh + 60);
+  if (loader.err) {
+    ctx.fillStyle = C.red;
+    ctx.fillText(loader.err.slice(0, 60), W / 2, by + bh + 84);
+  }
+  ctx.textAlign = "left";
+
+  uiButton(W / 2 - 80, cy + ch - 62, 160, 42, "返回首页", {
+    fill: "#FFF4DC", hot: C.yellow, text: "#241230", fs: 15, seed: 840, action: goHome,
+  });
+}
+
+// ---------- 画布里的 HUD ----------
+function drawHud() {
+  pen = ctx;
+  const { x, y, w, h } = HUD_BAR;
+  ink(rectPts(x, y, w, h), { fill: "rgba(255,244,220,0.95)", stroke: INK, lw: 3.4, seed: 700, amt: 2.8 });
+
+  ctx.textAlign = "left";
+  ctx.font = "700 18px system-ui";
+  ctx.fillStyle = INK;
+  ctx.fillText(`找到 ${game.score}`, x + 18, y + 31);
+  ctx.font = "13.5px system-ui";
+  ctx.fillStyle = "#5C3A6B";
+  ctx.fillText(`还没找到 ${game.items.filter((i) => !isHazard(i.kind)).length}`, x + 108, y + 30);
+
+  // 三次机会：三颗毛线球，用掉一颗就灰掉
+  for (let i = 0; i < 3; i++) {
+    disc(x + 216 + i * 28, y + 22, 9, {
+      fill: i < game.lives ? C.magenta : "#C6B5D6", stroke: INK, lw: 2.4, seed: 720 + i, amt: 1.6,
+    });
+  }
+  ctx.font = "12px system-ui";
+  ctx.fillStyle = "#5C3A6B";
+  ctx.fillText("机会", x + 216, y + 44);
+
+  const modes = { head: "身体左右挪", arm: "伸手臂", mouse: "鼠标" };
+  ctx.font = "13.5px system-ui";
+  ctx.fillText(`玩法：${modes[game.input] || "-"}`, x + 320, y + 30);
+
+  // 灵敏度滑块
+  ctx.fillText("灵敏度", SENS_BAR.x - 62, y + 30);
+  ctx.save();
+  ink(rectPts(SENS_BAR.x, SENS_BAR.y, SENS_BAR.w, 9), { fill: "#E9D8B8", stroke: INK, lw: 2.4, seed: 760, amt: 1.8 });
+  if (sens > 0.01) {
+    ink(rectPts(SENS_BAR.x + 1, SENS_BAR.y + 1, (SENS_BAR.w - 2) * sens, 7), {
+      fill: C.purple, stroke: null, seed: 761, amt: 1.6,
+    });
+  }
+  disc(SENS_BAR.x + SENS_BAR.w * sens, SENS_BAR.y + 4, 9, {
+    fill: C.yellow, stroke: INK, lw: 2.6, seed: 762, amt: 1.4,
+  });
+  ctx.restore();
+
+  if (game.input === "head") {
+    uiButton(BTN_CAL.x, BTN_CAL.y, BTN_CAL.w, BTN_CAL.h, "校准中间", {
+      fill: "#FFF4DC", hot: C.yellow, text: "#241230", fs: 13, seed: 770,
+      action: () => {
+        game.centerX = game.trackX;
+        setStatus(`已把 ${(game.centerX * 100).toFixed(0)}% 设为“中间”—— 现在往左/右挪就能伸`);
+      },
+    });
+  }
+  uiButton(BTN_HOME.x, BTN_HOME.y, BTN_HOME.w, BTN_HOME.h, "首页", {
+    fill: "#FFF4DC", hot: C.yellow, text: "#241230", fs: 13, seed: 780, action: goHome,
+  });
 }
 
 function drawOverlay() {
   if (game.flash > 0) {
     ctx.fillStyle = `rgba(${game.flashColor},${Math.min(0.62, game.flash * 0.72)})`;
     ctx.fillRect(0, 0, W, H);
-  }
-  if (game.phase === "over") {
-    drawResult();
-  } else if (game.phase === "ready") {
-    ctx.fillStyle = "rgba(43,21,51,0.62)";
-    ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = "#FFF4DC";
-    ctx.font = "500 26px system-ui";
-    ctx.textAlign = "center";
-    ctx.fillText("帮老奶奶找她的首饰", W / 2, H / 2 - 6);
-    ctx.font = "15px system-ui";
-    ctx.fillStyle = "#CDB4FF";
-    ctx.fillText("点下方「开始」，站到镜头前", W / 2, H / 2 + 26);
-    ctx.textAlign = "left";
   }
 }
 
@@ -1223,48 +1680,55 @@ function draw(dt) {
   }
   ctx.drawImage(deskLayer, 0, 0);
   pen = ctx;
-  for (const it of game.items) drawItem(it);
-  drawArm();
-  if (game.arm.carry) {
-    const tip = tipPos();
-    drawItem({ ...game.arm.carry, x: tip.x, y: tip.y + 18, bob: 0 });
+  if (game.phase === "playing" || game.phase === "over") {
+    for (const it of game.items) drawItem(it);
+    drawArm();
+    if (game.arm.carry) {
+      const tip = tipPos();
+      drawItem({ ...game.arm.carry, x: tip.x, y: tip.y + 18, bob: 0 });
+    }
+    drawPops();
   }
-  drawPops();
   ctx.restore();
-  drawPanel();
-  drawGranny();
+  pen = ctx;
+
+  if (game.phase === "home") drawHome();
+  else if (game.phase === "loading") drawLoading();
+  else if (game.phase === "playing") {
+    drawHud();
+    drawStatusLine();
+    drawPanel();
+    drawGranny();
+  }
+  if (game.phase === "over") drawResult();
   drawOverlay();
+
+  const overBtn = ui.hits.some((b) => inRect(ui.hover, b.x, b.y, b.w, b.h));
+  canvas.style.cursor = overBtn ? "pointer" : "default";
 }
 
-// ---------- 诊断面板 ----------
-let fpsT0 = 0, fpsN = 0;
-function updateDiag() {
+// ---------- 检测频率（只给画布里的调试行用） ----------
+let fpsT0 = 0;
+setInterval(() => {
   const now = performance.now();
-  if (!fpsT0) fpsT0 = now;
   const secs = (now - fpsT0) / 1000;
-  if (secs > 0.5) {
+  if (fpsT0 && secs > 0.5) {
     poseState.fps = Math.round(poseState.detects / secs);
     poseState.detects = 0;
     fpsT0 = now;
-  }
-  const ok = (v) => (v ? "✓" : "✗");
-  el.diag.innerHTML =
-    `摄像头 ${ok(poseState.live)} · 模型 ${ok(poseState.model)}（${poseState.modelUrl}/${poseState.delegate}）` +
-    ` · 检测到人 ${ok(poseState.person)} · 检测 ${poseState.fps} 次/秒` +
-    ` · 身体位置 ${(game.trackX * 100).toFixed(0)}% · 中线 ${(game.centerX * 100).toFixed(0)}%` +
-    ` · 偏移 ${(game.lean * 100).toFixed(0)}%` +
-    (poseState.err ? ` · <span class="warn">${poseState.err}</span>` : "");
-}
+  } else if (!fpsT0) fpsT0 = now;
+}, 500);
 
 // ---------- 主循环 ----------
 function loop(ts) {
   const dt = Math.min((ts - (game.lastTs || ts)) / 1000, 0.05);
   game.lastTs = ts;
-  poseState.live = video.readyState >= 2; // 任何模式下都刷新，别让诊断行停在旧状态
+  poseState.live = video.readyState >= 2; // 任何模式下都刷新
+  ui.hits = [];                            // 按钮每帧重新登记
 
-  let input;
+  let input = { holding: false, dir: null };
   if (game.input === "head" || game.input === "arm") {
-    const r = readPose(ts);
+    const r = game.phase === "playing" ? readPose(ts) : null;
     if (r) {
       input = r;
     } else if (performance.now() - poseState.lastOk < HOLD_MS) {
@@ -1272,13 +1736,12 @@ function loop(ts) {
     } else {
       input = { holding: false, dir: lastInput.dir };
       if (game.phase === "playing") {
-        if (!poseState.live) setStatus("摄像头还没画面 —— 等一下，或点「重来一局」");
-        else if (!poseState.model) setStatus("姿态模型还没加载完 —— 看下方诊断");
+        if (!poseState.live) setStatus("摄像头还没画面 —— 等一下，或点「首页」回去重开");
         else if (!poseState.person) setStatus("看不到人 —— 站进镜头，让上半身进画面");
       }
     }
   } else {
-    input = mouseInput();
+    input = game.phase === "playing" ? mouseInput() : { holding: false, dir: null };
   }
 
   updateArm(dt, input.holding, input.dir);
@@ -1288,35 +1751,23 @@ function loop(ts) {
   if (game.pops) game.pops = game.pops.filter((p) => (p.t += dt) < 1.1);
 
   draw(dt);
-  updateDiag();
+  ui.click = null;   // 点击只在本帧生效：没点到任何按钮就作废，别留着误触发以后的按钮
   requestAnimationFrame(loop);
 }
 
-document.getElementById("btnHead").addEventListener("click", () => startCamera("head"));
-document.getElementById("btnArm").addEventListener("click", () => startCamera("arm"));
-document.getElementById("btnMouse").addEventListener("click", startMouse);
-document.getElementById("btnRestart").addEventListener("click", () => {
-  if (game.input === "none") game.input = "mouse";
-  reset();
-});
-el.save.addEventListener("click", () => {
-  if (!snap.canvas) return;
-  snap.canvas.toBlob((blob) => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "stretch-miner-last-catch.png";
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 3000);
-  });
-});
-document.getElementById("btnCenter").addEventListener("click", () => {
-  game.centerX = game.trackX;
-  setStatus(`已把 ${(game.centerX * 100).toFixed(0)}% 设为"中间" —— 现在往左/右挪就能伸`);
-});
-el.sens.addEventListener("input", () => {
-  sens = Number(el.sens.value) / 100;
-  el.sensVal.textContent = String(el.sens.value);
+// 键盘也能开一局：首页/结算页按回车或空格，游戏中按 Esc 回首页
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " " && e.key !== "Escape") return;
+  if (game.phase === "home" && e.key !== "Escape") {
+    e.preventDefault();
+    startCamera("head");
+  } else if (game.phase === "over" && e.key !== "Escape") {
+    e.preventDefault();
+    if (game.input === "none") game.input = "mouse";
+    reset();
+  } else if (e.key === "Escape" && game.phase !== "home") {
+    goHome();
+  }
 });
 
 syncHud();
@@ -1324,7 +1775,9 @@ requestAnimationFrame(loop);
 
 // 调试用：控制台里可以 __stretchMiner.game / .poseState 看状态
 window.__stretchMiner = {
-  game, poseState, snap, reset, startMouse, startCamera, readHead, readArm,
+  game, poseState, snap, loader, ui,
+  reset, startMouse, startCamera, goHome, readHead, readArm,
+  get sens() { return sens; }, set sens(v) { sens = v; },   // 调试用
   loadPose, // 暴露出来便于离线自检：await __stretchMiner.loadPose() 应返回模型实例
   // 注入一个假的姿态检测器（离线自检用，正常运行时不需要）
   _injectDetector(fn) {
