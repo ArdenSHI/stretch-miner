@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Stretch Miner · 帮老奶奶找首饰</title>
+<title>Stretch Miner · Help Granny Find Her Jewellery</title>
 <style>
   :root {
     --bg: #2B1533;
@@ -14,27 +14,27 @@
   body {
     margin: 0;
     background: var(--bg);
-    font-family: "PingFang SC", "Helvetica Neue", system-ui, sans-serif;
+    font-family: system-ui, -apple-system, "Helvetica Neue", sans-serif;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     padding: 18px 14px;
     min-height: 100vh;
   }
-  /* 整个游戏都在这一块画布里：首页、下载进度条、玩法说明、按钮全画在里面 */
+  /* the whole game lives in this one canvas: home, download bar, instructions, buttons */
   canvas {
     width: 960px; max-width: 100%; height: auto;
     background: #E08A2B; border: 3px solid var(--line); border-radius: 14px;
     display: block; touch-action: none;
   }
-  /* 不能 display:none —— 某些浏览器会停止解码隐藏视频的帧，姿态就永远推不出来 */
+  /* never display:none — some browsers stop decoding frames of a hidden video, and pose is never produced */
   video { position: fixed; top: 0; left: 0; width: 2px; height: 2px; opacity: .01; pointer-events: none; }
-  /* 只给读屏软件的状态行：看得见的人不需要，画面里已经写着了 */
+  /* status line for screen readers only: sighted players already read it on the canvas */
   #a11y {
     position: absolute; width: 1px; height: 1px; margin: -1px;
     padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
   }
 
-  /* 手碰到虫子/插头：整个窗口跟着抖 */
+  /* hand touched a bug/plug: the whole window shakes */
   @keyframes quake {
     0%   { transform: translate(0, 0) rotate(0deg); }
     8%   { transform: translate(-12px, 6px) rotate(-.7deg); }
@@ -52,7 +52,7 @@
 </style>
 </head>
 <body>
-  <canvas id="stage" width="960" height="640" aria-label="帮老奶奶找首饰 · 摄像头互动游戏"></canvas>
+  <canvas id="stage" width="960" height="640" aria-label="Stretch Miner · a camera-controlled game"></canvas>
   <div id="a11y" role="status" aria-live="polite"></div>
 
   <video id="cam" playsinline muted></video>

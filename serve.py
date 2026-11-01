@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""启动 Stretch Miner 的本地服务器。
+"""Local server for Stretch Miner.
 
-用法：python3 serve.py [端口]   （默认 8011）
+Usage: python3 serve.py [port]   (default 8011)
 
-直接用 `python3 -m http.server` 大多也能跑，但老版本 Python 会把 .mjs /
-.wasm 当成二进制流返回，浏览器会拒绝加载模块 —— 这个脚本把 MIME 固定好。
+Plain `python3 -m http.server` usually works too, but older Python versions
+serve .mjs / .wasm as a byte stream, which browsers refuse to load as modules —
+this script pins the MIME types.
 """
 import http.server
 import mimetypes
@@ -22,5 +23,5 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8011
-    print(f"Serving http://127.0.0.1:{port}/  (Ctrl+C 退出)")
+    print(f"Serving http://127.0.0.1:{port}/  (Ctrl+C to quit)")
     http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()

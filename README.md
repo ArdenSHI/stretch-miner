@@ -1,104 +1,128 @@
-# Stretch Miner · 帮老奶奶找首饰
+# Stretch Miner · Help Granny Find Her Jewellery
 
-**在线玩：https://ardenshi.github.io/stretch-miner/** （HTTPS，摄像头可用，不需要装任何东西）
+**Play online: https://ardenshi.github.io/stretch-miner/** (HTTPS, camera works, nothing to install)
 
-![玩法演示](shots/demo.gif)
+![Gameplay demo](shots/demo.gif)
 
-SD5913 Assignment 3（interactive experience）。一位老眼昏花的老奶奶把她的
-**眼镜、项链、耳环、戒指、胸针、发夹**掉在了一张乱糟糟的桌面上——铺开的旧报纸、
-茶杯、药瓶、毛线团、信件和纽扣之间。摄像头画面就是**奶奶的脸**（画布底部正中，
-镜像，像照镜子），她的手从画面上缘伸出去。**不用手也能玩**：身体（或头）往画面
-左/右挪一点，手就朝那个斜上方伸；一直偏着就一直长，挪回中间就极速收回。
+SD5913 Assignment 3 (interactive experience). A short-sighted granny has dropped her
+**glasses, necklace, earrings, ring, brooch and hairpin** on a hopelessly messy desk —
+scattered among old newspapers, a teacup, medicine bottles, a ball of yarn, letters
+and buttons. The camera feed is **Granny's face** (centred along the bottom edge of
+the canvas, mirrored like a mirror), and her hand reaches out from its top edge.
+**It is playable without hands**: shift your body (or head) a little to the left or
+right and the hand reaches diagonally that way; keep leaning and it keeps growing;
+return to the centre and it snaps back instantly.
 
-桌上混着**虫子和裸露在外、还通着电的插头**——碰到它们手会猛地缩回来，
-**整个浏览器窗口跟着震一下**（画布内部震动 + `body.quake` 动画），并少一次机会，
-一共三次。桌上的首饰全部找完即结束；结算画面正中是**抓住最后一件首饰那一刻的
-摄像头定格帧**，可以一键存成 PNG。
+Mixed into the desk are **bugs and bare plugs that are still live** — touch one and
+the hand snaps back, **the whole browser window shakes** (canvas shake + a
+`body.quake` CSS animation), and you lose one of three tries. Find every piece of
+jewellery to finish; the result screen shows, front and centre, **the frozen camera
+frame from the moment you caught the last piece**, which you can save as a PNG.
 
-| 乱糟糟的桌面 | 抓住项链 |
+| A messy desk | Caught the necklace |
 | --- | --- |
-| ![桌面](shots/01-desk.png) | ![抓住](shots/03-grab.png) |
+| ![Desk](shots/01-desk.png) | ![Grab](shots/03-grab.png) |
 
-| 碰到虫子：短句 + 扣机会 + 整窗震动 | 碰到插头：电火花配色的反馈 |
+| Touched a bug: quip + one try fewer + whole-window shake | Touched a plug: electric-blue feedback |
 | --- | --- |
-| ![虫子](shots/04-bug.png) | ![插头](shots/05-plug.png) |
+| ![Bug](shots/04-bug.png) | ![Plug](shots/05-plug.png) |
 
-结算画面 —— 正中是抓住最后一件首饰那刻的摄像头定格帧：
+The result screen — the frozen frame of the last catch in the middle:
 
-![结算](shots/06-result.png)
+![Result](shots/06-result.png)
 
-> 录屏说明：`shots/demo.gif` 里的"摄像头画面"是测试时注入的虚拟人脸，
-> 真人游玩时那格就是你自己的实时画面。完整 MP4 见 `shots/demo.mp4`。
+> About the footage: the "camera panel" in `shots/demo.gif` shows a virtual face
+> injected during automated testing. With a real webcam that slot is your own live
+> feed. Full video: `shots/demo.mp4`.
 
-- 目标用户：久坐想活动一下的人；只靠身体左右挪，手不需要举着，坐着也能玩。
-- 核心闭环：偏移（输入）→ 手沿偏移方向伸长（响应）→ 看见手指开合、听见音效、
-  冒出短句 / 窗口震动（反馈）→ 决定下一次偏多少。
-- 三种控制：`head`（鼻尖相对画面中心的偏移，默认，不用手）· `arm`（MediaPipe 读手腕-肩膀矢量，适合真的伸手臂）· `mouse`（按住拖动，降级用）。
-- 摄像头被拒绝或模型加载失败时自动切鼠标模式。
-- 隐私：画面只在本地推理，不上传、不保存；定格帧也只存在内存里，点「保存」才落盘。
+- Target users: people who have been sitting too long and want to move a little;
+  you only shift your body left and right — no need to hold your arms up, it works
+  seated.
+- Core loop: lean (input) → the hand grows along the lean direction (response) →
+  you see the fingers close, hear the sound, a quip pops up / the window shakes
+  (feedback) → decide how far to lean next time.
+- Three controls: `head` (how far your nose/torso sits off centre — default,
+  hands-free) · `arm` (MediaPipe reads the wrist-to-shoulder vector, for really
+  reaching out) · `mouse` (press and drag, fallback).
+- If the camera is denied or the model fails to load, the game switches to mouse
+  mode automatically.
+- Privacy: frames are only ever inferred locally — nothing is uploaded, nothing is
+  stored; the frozen frame lives in memory until you press "Save this frame".
 
-## 画风
+## The look
 
-马克笔笔触 + 高饱和配色：所有形状都走一套手绘笔触工具（`ink` 一遍填充 +
-两遍抖动描边，抖动是**确定性**的，同一件东西每帧抖得一样，画面不会闪）；
-静态桌面画进离屏图层只画一次。要换主题/配色改 `game.js` 顶部的 `C` 调色板
-和各 `draw*Art` 函数即可。
+Marker-pen strokes + a high-saturation palette: every shape goes through a small
+hand-drawn stroke toolkit (`ink` = one fill pass + two jittered stroke passes; the
+jitter is **deterministic**, so the same object jitters identically on every frame
+and the picture never flickers). The static desk is painted once into an offscreen
+layer. To re-theme, change the `C` palette at the top of `game.js` and the
+`draw*Art` functions.
 
-## 界面：全部在画布里
+## UI: everything lives in the canvas
 
-页面上没有任何文字或按钮 —— 首页、下载进度条、玩法说明、灵敏度滑块、
-校准按钮、结算页，**全部画在游戏画布里**：
+There is no text or button on the page — home screen, download progress bar, how-to
+play, sensitivity slider, calibration button and result screen are **all drawn
+inside the game canvas**:
 
-- **首页**：三种开始方式（不用手 / 伸手臂 / 鼠标试玩）+ 一段玩法说明；
-  回车或空格也能直接开始，游戏中按 Esc 回首页
-- **下载进度条**：第一次开始要取约 15 MB（识别库 + 识别引擎 + 姿态模型），
-  画布里有一根"绕毛线"进度条，显示百分比、已取字节、下载速度和当前在第几步，
-  还能点「返回首页」取消；取过的文件会存进浏览器的 Cache Storage，
-  **第二次打开同一台电脑是秒开**（实测 118ms）
-- **游戏内 HUD**：找到数 / 剩余 / 三颗毛线球机会 / 灵敏度滑块（可直接拖）/
-  「校准中间」/「首页」按钮
+- **Home**: three ways to start (hands-free / reach with your arm / mouse) plus a
+  short how-to; Enter or Space also starts a round, Esc returns home during play.
+- **Download progress**: the first start fetches about 15 MB (recognition library +
+  engine + pose model). A "winding yarn" progress bar shows the percentage, bytes
+  fetched, speed and the current step — and you can press "Back to home" to cancel.
+  Fetched files are stored in the browser's Cache Storage, so **the second open on
+  the same machine is instant** (measured at 118 ms).
 
-## 运行
+  ![Loading](shots/02-loading.png)
+- **In-game HUD**: found count / left / three yarn-ball tries / a draggable
+  sensitivity slider / "Centre here" and "Home" buttons.
 
-线上直接玩：https://ardenshi.github.io/stretch-miner/ 。
-仓库由 GitHub Pages 从 `main` 根目录发布，改完 `git push` 后一两分钟生效。
+## Run it
 
-本地开发：
+Play online: https://ardenshi.github.io/stretch-miner/ .
+GitHub Pages serves the repo from the root of `main`; after `git push` it goes live
+in a minute or two.
+
+Local development:
 
 ```bash
 python3 serve.py
-# 打开 http://localhost:8011/
+# open http://localhost:8011/
 ```
 
-`getUserMedia` 必须在 `localhost` 或 HTTPS 下使用。MediaPipe 的库
-（`vendor/vision_bundle.mjs` + wasm）和姿态模型（`vendor/models/`，
-约 10 MB）都放在仓库里、**优先按同源加载**，所以别人打开页面也不需要访问
-jsdelivr / Google；本地副本取不到时才回退在线源。
-`serve.py` 会把 .mjs/.wasm 的 MIME 类型配置正确（老版本 Python 的
-`python3 -m http.server` 可能返回错误类型导致模块加载失败）。
+`getUserMedia` requires `localhost` or HTTPS. The MediaPipe library
+(`vendor/vision_bundle.mjs` + wasm) and the pose model (`vendor/models/`, ~10 MB)
+are committed to the repo and **loaded same-origin first**, so whoever opens the
+page never needs to reach jsdelivr / Google; online sources are only a fallback.
+`serve.py` pins the MIME types for `.mjs`/`.wasm` (older Python versions behind
+`python3 -m http.server` may serve the wrong type and break module loading).
 
-## 文件
+## Files
 
-- `index.html` — 页面外壳（只有一块画布；首页/进度条/按钮都在画布内）
-- `game.js` — 全部逻辑：画布界面系统、带进度的模型加载、姿态读取、手臂状态机、碰撞、音效、绘制
-- `serve.py` — 本地服务器（固定 MIME）
-- `vendor/` — MediaPipe tasks-vision 库与 pose_landmarker_lite 模型
-- `shots/` — README 用的截图与演示动图（demo.gif / demo.mp4）
-- `PROCESS.md` — AI 使用记录与真人测试观察
+- `index.html` — page shell (one canvas only; home / progress / buttons are drawn inside it)
+- `game.js` — all the logic: in-canvas UI, progress-aware model loading, pose reading, the arm state machine, collisions, sound, drawing
+- `serve.py` — local server (fixed MIME types)
+- `vendor/` — MediaPipe tasks-vision library and the pose_landmarker_lite model
+- `shots/` — screenshots and the demo clip used by this README (demo.gif / demo.mp4)
+- `PROCESS.md` — how the AI was used, plus observations from playtesting
 
-## 摄像头调不通时
+## If the camera misbehaves
 
-游戏里那格摄像头画面就是你的实时影像（镜像）。如果身体挪了手却不动：
+The camera panel in the game is your live, mirrored feed. If you lean but the hand
+does not move:
 
-- **伸不出**：拖高画布顶部的「灵敏度」滑块；或点「校准中间」把现在的位置设为中间
-- **自己乱伸**：拖低灵敏度
-- **摄像头被拒绝 / 模型取不到**：会自动切到鼠标模式（按住拖动、松手收回），
-  状态行里会说明原因
-- **抓不到正上方的宝物**：已修复 —— 偏移→角度映射固定用 `leanStart` 当死区，越过阈值后从正上方开始扫
-- **举着却假死**：已修复 —— 收回后不再上闩锁；同一视频帧不重复推理时沿用上一帧结果，不再误判成松手
+- **Cannot reach out**: drag the "sensitivity" slider on the HUD higher; or press
+  "Centre here" to make the current position the centre.
+- **Reaches by itself**: drag the slider lower.
+- **Camera denied / model not fetched**: the game switches to mouse mode
+  (hold and drag, release to retract) and the status line explains why.
+- **Cannot hit what is straight above**: fixed — the lean→angle mapping pins its
+  dead zone to `leanStart`, and past the threshold it sweeps starting from straight up.
+- **Holding but nothing happens**: fixed — there is no "must release first" latch
+  any more; when the same video frame cannot be re-inferred, the previous result is
+  reused instead of being misread as "let go".
 
-## 待办（原型 → 提交之间）
+## TODO (prototype → submission)
 
-- [x] README 补截图/录屏，PROCESS.md 记录 AI 使用与两次实测观察
-- [ ] 真人摄像头实测：用「灵敏度」滑块代替改代码调阈值（arm 模式的 `needUp / needLen` 仍需手动调）
-- [ ] 再找 1–2 人试用新版（手绘画风 + 整窗震动），把观察追加进 PROCESS.md
+- [x] Screenshots / demo clip in the README; PROCESS.md records AI usage and two rounds of playtesting
+- [ ] More real-camera playtests: tune with the "sensitivity" slider instead of editing thresholds in code (arm mode's `needUp / needLen` still need manual tuning)
+- [ ] Have 1–2 more people try the new version (hand-drawn look + whole-window shake) and append observations to PROCESS.md
