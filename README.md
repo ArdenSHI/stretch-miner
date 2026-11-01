@@ -121,6 +121,19 @@ does not move:
   any more; when the same video frame cannot be re-inferred, the previous result is
   reused instead of being misread as "let go".
 
+## Credits
+
+- **MediaPipe Tasks Vision** (pose landmarker) — Google, Apache-2.0. Vendored into
+  `vendor/` (library + wasm + `pose_landmarker_lite.task`) so the page works
+  without third-party CDNs.
+- Everything else (game logic, drawing, sounds, page) is original code written
+  for this assignment; no course example code was copied. The idea is unrelated
+  to Assignment 2's data visualisation.
+- Sounds are synthesised at runtime with the Web Audio API — no external audio
+  files. Fonts are the system UI stack.
+- Test screenshots use a synthetic face injected during automated testing
+  (explained above the gallery).
+
 ## TODO (prototype → submission)
 
 - [x] Screenshots / demo clip in the README; PROCESS.md records AI usage and two rounds of playtesting

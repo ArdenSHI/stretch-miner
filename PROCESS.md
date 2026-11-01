@@ -103,7 +103,20 @@ like cold geometry, and the charm did not land.
 whose world this is. The tester's feedback made "game feel" an acceptance
 criterion as important as the interaction itself.
 
-## 4. Where it stands, and what is next
+## 4. Two AI suggestions: one taken, one pushed back on
+
+- **Accepted:** the AI suggested caching the ~15 MB of model files in the
+  browser's Cache Storage so a second visit starts in about 100 ms instead of
+  re-downloading. It cost one afternoon and removed the single worst first
+  impression ("it is stuck at 54%").
+- **Changed:** the AI's first interaction design was *lean to aim, release/click
+  to fire* (a discrete click-to-shoot, closer to the original gold miner). I
+  pushed back: for the target user the continuous lean itself should be the
+  input — hold the lean and the arm keeps growing, back to centre it snaps
+  back. That continuous control became the core of the experience; the click
+  version would have made the "no hands, seated" premise much weaker.
+
+## 5. Where it stands, and what is next
 
 - Both rounds of changes are live (2026-11-01).
 - Next: have the same two testers play the new version and confirm the shake
