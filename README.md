@@ -2,6 +2,8 @@
 
 **在线玩：https://ardenshi.github.io/stretch-miner/** （HTTPS，摄像头可用，不需要装任何东西）
 
+![玩法演示](shots/demo.gif)
+
 SD5913 Assignment 3（interactive experience）。一位老眼昏花的老奶奶把她的
 **眼镜、项链、耳环、戒指、胸针、发夹**掉在了一张乱糟糟的桌面上——铺开的旧报纸、
 茶杯、药瓶、毛线团、信件和纽扣之间。摄像头画面就是**奶奶的脸**（画布底部正中，
@@ -12,6 +14,21 @@ SD5913 Assignment 3（interactive experience）。一位老眼昏花的老奶奶
 **整个浏览器窗口跟着震一下**（画布内部震动 + `body.quake` 动画），并少一次机会，
 一共三次。桌上的首饰全部找完即结束；结算画面正中是**抓住最后一件首饰那一刻的
 摄像头定格帧**，可以一键存成 PNG。
+
+| 乱糟糟的桌面 | 抓住项链 |
+| --- | --- |
+| ![桌面](shots/01-desk.png) | ![抓住](shots/03-grab.png) |
+
+| 碰到虫子：短句 + 扣机会 + 整窗震动 | 碰到插头：电火花配色的反馈 |
+| --- | --- |
+| ![虫子](shots/04-bug.png) | ![插头](shots/05-plug.png) |
+
+结算画面 —— 正中是抓住最后一件首饰那刻的摄像头定格帧：
+
+![结算](shots/06-result.png)
+
+> 录屏说明：`shots/demo.gif` 里的"摄像头画面"是测试时注入的虚拟人脸，
+> 真人游玩时那格就是你自己的实时画面。完整 MP4 见 `shots/demo.mp4`。
 
 - 目标用户：久坐想活动一下的人；只靠身体左右挪，手不需要举着，坐着也能玩。
 - 核心闭环：偏移（输入）→ 手沿偏移方向伸长（响应）→ 看见手指开合、听见音效、
@@ -52,6 +69,8 @@ jsdelivr / Google；本地副本取不到时才回退在线源。
 - `game.js` — 全部逻辑：姿态读取、手臂状态机、碰撞、音效、绘制
 - `serve.py` — 本地服务器（固定 MIME）
 - `vendor/` — MediaPipe tasks-vision 库与 pose_landmarker_lite 模型
+- `shots/` — README 用的截图与演示动图（demo.gif / demo.mp4）
+- `PROCESS.md` — AI 使用记录与真人测试观察
 
 ## 摄像头调不通时（诊断行）
 
@@ -65,6 +84,6 @@ jsdelivr / Google；本地副本取不到时才回退在线源。
 
 ## 待办（原型 → 提交之间）
 
+- [x] README 补截图/录屏，PROCESS.md 记录 AI 使用与两次实测观察
 - [ ] 真人摄像头实测：用「灵敏度」滑块代替改代码调阈值（arm 模式的 `needUp / needLen` 仍需手动调）
-- [ ] 找 1–2 人试用，把观察写进 PROCESS.md
-- [ ] README 补截图/录屏，PROCESS.md 记录 AI 使用
+- [ ] 再找 1–2 人试用新版（手绘画风 + 整窗震动），把观察追加进 PROCESS.md
