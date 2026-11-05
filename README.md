@@ -133,9 +133,3 @@ does not move:
   files. Fonts are the system UI stack.
 - Test screenshots use a synthetic face injected during automated testing
   (explained above the gallery).
-
-## TODO (prototype → submission)
-
-- [x] Screenshots / demo clip in the README; PROCESS.md records AI usage and two rounds of playtesting
-- [ ] More real-camera playtests: tune with the "sensitivity" slider instead of editing thresholds in code (arm mode's `needUp / needLen` still need manual tuning)
-- [ ] Have 1–2 more people try the new version (hand-drawn look + whole-window shake) and append observations to PROCESS.md
